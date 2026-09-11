@@ -119,11 +119,11 @@ async fn create(host: &Host, attach: &cli::Attach) -> Result<Session> {
     // The image is named before anything is reclaimed, because reclamation takes away
     // every image no session refers to — and the one this session is about to start from
     // is exactly that until the session exists.
-    let staged = image::stage(host, &attach.workspace, arch).await?;
+    let source = image::source(host, attach.workspace.as_deref(), arch).await?;
 
     // Stale environments go before the host is measured, so that the measurement is of
     // the host this session will actually run on.
-    reclaim::make_room(host, staged.tag()).await?;
+    reclaim::make_room(host, source.tag()).await?;
 
     // Sizing is checked before anything is created, so a host that cannot carry another
     // session refuses without leaving an identity or a machine behind.
@@ -134,8 +134,8 @@ async fn create(host: &Host, attach: &cli::Attach) -> Result<Session> {
         "the host can carry another session"
     );
 
-    image::ensure(host, &staged).await?;
-    let image = staged.tag().clone();
+    image::ensure(host, &source, arch).await?;
+    let image = source.tag().clone();
 
     let id = allocate(host).await?;
     let name = id.container_name()?;

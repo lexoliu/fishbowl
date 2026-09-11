@@ -378,6 +378,35 @@ impl AppleContainer {
             .collect())
     }
 
+    /// Pulls an image the registry holds.
+    ///
+    /// The platform is pinned because a session's architecture is its own rather than
+    /// the host's: an `amd64` session on an arm64 host needs the amd64 image, and a
+    /// registry answer left to default to the host's platform would hand back one the
+    /// machine cannot boot.
+    ///
+    /// Quiet by choice: a pull is also how a staged image asks the registry whether it
+    /// was ever published, and a miss there is an ordinary step towards a local build
+    /// rather than an error the researcher should watch scroll by.
+    ///
+    /// # Errors
+    /// Fails when the registry does not hold the reference, or the pull cannot finish.
+    pub async fn image_pull(
+        &self,
+        reference: &ImageReference,
+        arch: Arch,
+    ) -> Result<(), RuntimeError> {
+        self.output(&[
+            "image".to_owned(),
+            "pull".to_owned(),
+            "--platform".to_owned(),
+            format!("linux/{}", arch.as_str()),
+            reference.to_string(),
+        ])
+        .await
+        .map(drop)
+    }
+
     /// Deletes an image the runtime holds.
     ///
     /// # Errors

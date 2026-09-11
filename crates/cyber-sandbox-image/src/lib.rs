@@ -21,3 +21,9 @@ pub use openssh::OpenSshBuild;
 pub use profile::{ToolProfile, UnknownProfile};
 pub use render::RenderedImage;
 pub use stage::{BuildContext, StageError};
+
+/// Kali image the sandbox derives from.
+pub const DEFAULT_BASE_IMAGE: &str = "docker.io/kalilinux/kali-rolling:latest";
+
+/// How much of the Kali toolchain the sandbox image installs.
+pub const DEFAULT_PROFILE: ToolProfile = ToolProfile::Core;

@@ -1,0 +1,87 @@
+name: Image
+
+# Builds the sandbox image where builds belong. Every merge to a mainline branch pushes
+# the image its sources describe under its content-digest tag, so a session opened from
+# that checkout pulls it instead of compiling it; a published release additionally tags
+# the image with the version it was cut for, which is what an installed binary asks the
+# registry for.
+
+on:
+  push:
+    branches: [dev, main]
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Ref to build the image from
+        required: true
+        default: dev
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    name: image (${{ matrix.arch }})
+    # Only the CLI crate's release carries a version tag the installed binary can name;
+    # other crates' releases change nothing the binary asks for.
+    if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'cyber-sandbox-v')
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+          - arch: amd64
+            runner: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.ref || github.sha }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Staged with the same code the CLI stages with, so the digest the image is pushed
+      # under is the one the CLI computes for these sources.
+      - name: Stage the build context
+        id: stage
+        run: |
+          cargo build --release -p cyber-sandbox-image --bin stage-context
+          TAG=$(target/release/stage-context \
+            --workspace . --arch ${{ matrix.arch }} --out "$RUNNER_TEMP/context")
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "context=$RUNNER_TEMP/context/${TAG#*-}" >> "$GITHUB_OUTPUT"
+
+      - name: Image tags
+        id: tags
+        env:
+          RELEASE: ${{ github.event_name == 'release' }}
+        run: |
+          IMAGE=ghcr.io/lexoliu/cyber-sandbox
+          TAGS="--tag $IMAGE:${{ steps.stage.outputs.tag }}"
+          if [ "$RELEASE" = "true" ]; then
+            VERSION=$(cargo metadata --no-deps --format-version 1 \
+              | jq -r '.packages[] | select(.name == "cyber-sandbox") | .version')
+            TAGS="$TAGS --tag $IMAGE:${{ matrix.arch }}-$VERSION"
+          fi
+          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        run: |
+          docker buildx build \
+            --platform linux/${{ matrix.arch }} \
+            ${{ steps.tags.outputs.tags }} \
+            --push \
+            "${{ steps.stage.outputs.context }}"
