@@ -107,13 +107,16 @@ RUN npm install --global --no-fund --no-audit {{ agent_packages }}
 # it fetches the bundle its manifest names and checks it against the manifest's checksum
 # before linking it into ~/.local/bin. That is inside the researcher's home on purpose —
 # the CLI's self-updater writes beside it — and the install runs as the researcher for
-# the same reason, with HOME pinned because a build-time USER does not set it. The test
-# at the end fails the build, rather than the session, if the binary does not land where
-# the courier goes looking for it.
+# the same reason, with HOME pinned because a build-time USER does not set it. The
+# installer's own exit is discarded because it ends by running `devin setup`, an
+# interactive login wizard that cannot succeed on a builder with no terminal; what the
+# build is actually after is the binary, so the test on it — not the wizard — is what
+# fails the build rather than the session if the binary does not land where the courier
+# goes looking for it.
 USER {{ researcher_user }}
 RUN curl --fail --silent --show-error --location https://cli.devin.ai/install.sh \
-      | env HOME=/home/{{ researcher_user }} bash \
- && test -x /home/{{ researcher_user }}/.local/bin/devin
+      | env HOME=/home/{{ researcher_user }} bash; \
+    test -x /home/{{ researcher_user }}/.local/bin/devin
 USER root
 
 # The first-run questions, answered. Claude Code otherwise opens a session by asking
