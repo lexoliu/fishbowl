@@ -175,6 +175,16 @@ impl Host {
         self.state.join("sessions").join(format!("{id}.json"))
     }
 
+    /// Path of the lock that marks `id`'s session as held by a running invocation.
+    ///
+    /// The file is beside the record rather than inside it, because it is a kernel-held
+    /// fact — the flock on it is the ownership — while the record is data the holder
+    /// itself wrote.
+    #[must_use]
+    pub fn session_lock_path(&self, id: &SessionId) -> PathBuf {
+        self.state.join("sessions").join(format!("{id}.lock"))
+    }
+
     /// Reads the record for `id`.
     ///
     /// # Errors
@@ -248,10 +258,20 @@ impl Host {
 
     /// Deletes the record for `id`, tolerating one that is already gone.
     ///
+    /// The lock file goes with it: a session nobody can open has nothing left to hold.
+    /// Unlinking a file while a flock is held on it is safe — the lock follows the inode,
+    /// and whoever held it is gone by the time its session is forgotten.
+    ///
     /// # Errors
     /// Fails when the record exists but cannot be removed.
     pub async fn forget(&self, id: &SessionId) -> Result<()> {
         let path = self.session_path(id);
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => Ok(()),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(source) => Err(source).with_context(|| format!("removing {}", path.display())),
+        }?;
+        let path = self.session_lock_path(id);
         match tokio::fs::remove_file(&path).await {
             Ok(()) => Ok(()),
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),

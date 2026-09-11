@@ -77,6 +77,26 @@ pub fn banner(
         .context("writing the session summary")
 }
 
+/// What is printed as a session's run ends.
+///
+/// The agents' own exit lines — `devin -r <name>`, `claude --resume <id>` — name a
+/// process inside a machine that is already being released, and following them on the
+/// host finds nothing. The session is the thing that can be reopened, so it gets the
+/// last word.
+///
+/// # Errors
+/// Fails when the line cannot be written.
+pub fn epilogue(session: &provision::Session, command: &'static str) -> Result<()> {
+    let text = format!(
+        "Come back to this session with `cyber-sandbox {command} --resume {}`\n",
+        session.record.id
+    );
+    std::io::stderr()
+        .lock()
+        .write_all(text.as_bytes())
+        .context("writing the session's closing line")
+}
+
 /// Quotes `value` for a POSIX shell, since a remote command is interpreted by one.
 ///
 /// Every path this tool sends across is one it made itself, so this is not the difference

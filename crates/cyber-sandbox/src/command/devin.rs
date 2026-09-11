@@ -78,6 +78,7 @@ pub async fn run(host: &Host, arguments: &cli::Devin) -> Result<()> {
     // Whatever the run did: the socket is the researcher's login, and one left on disk is
     // one a later process on this host could still fetch a credential from.
     loan.close().await?;
+    command::epilogue(&session, "devin")?;
 
     match status? {
         status if status.success() => Ok(()),

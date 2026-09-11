@@ -24,6 +24,7 @@ use crate::{
     host::Host,
     image,
     keys::SandboxKey,
+    lease::Lease,
     pick, reclaim,
     session::{SessionId, SessionRecord},
 };
@@ -46,8 +47,8 @@ const RESOLVER_VARIABLE: &str = "CYBER_SANDBOX_RESOLVER";
 const AUTHORIZED_KEY_VARIABLE: &str = "CYBER_SANDBOX_AUTHORIZED_KEY";
 const WORK_ALIAS_VARIABLE: &str = "CYBER_SANDBOX_WORK_ALIAS";
 
-/// A session whose machine is running and reachable right now.
-#[derive(Debug, Clone)]
+/// A session whose machine is running and reachable right now, held by this process.
+#[derive(Debug)]
 pub struct Session {
     /// What the host remembers about it.
     pub record: SessionRecord,
@@ -55,6 +56,11 @@ pub struct Session {
     pub address: Ipv4Addr,
     /// Whether this invocation created it.
     pub created: bool,
+    /// The hold on the session: kept for the life of the process, its release stops the
+    /// machine — and a process that is gone releases it without being asked. Held, never
+    /// read: holding it is the whole of its work.
+    #[allow(dead_code)]
+    pub lease: Lease,
 }
 
 /// Opens the session `attach` asks for, creating one when it asks for none.
@@ -138,6 +144,10 @@ async fn create(host: &Host, attach: &cli::Attach) -> Result<Session> {
     let image = source.tag().clone();
 
     let id = allocate(host).await?;
+    // The lease is taken before the machine is: a failure or a kill between here and the
+    // record being written still ends with the machine stopped, because the reaper is
+    // already armed.
+    let lease = Lease::acquire(host, &id).await?;
     let name = id.container_name()?;
     let key = SandboxKey::load_or_create(&host.key_directory(), id.as_str()).await?;
     let work_alias = host.work_alias_of(&id).await?;
@@ -177,11 +187,15 @@ async fn create(host: &Host, attach: &cli::Attach) -> Result<Session> {
         record,
         address,
         created: true,
+        lease,
     })
 }
 
 /// Reopens a session, refusing anything its machine's shape cannot honour.
 async fn resume(host: &Host, attach: &cli::Attach, mut record: SessionRecord) -> Result<Session> {
+    // The lock is taken before the machine's state is read: a predecessor's reaper may
+    // still be stopping it, and only the lock makes the state observed underneath stable.
+    let lease = Lease::acquire(host, &record.id).await?;
     let name = record.id.container_name()?;
     let Some(container) = existing(host, &name).await? else {
         // The record describes a machine the runtime no longer holds, so there is nothing
@@ -221,6 +235,9 @@ async fn resume(host: &Host, attach: &cli::Attach, mut record: SessionRecord) ->
     }
 
     if container.status.state == RunState::Running {
+        // The lock was free, so no owner is attached: a machine this old was left
+        // running by an invocation that ended before the reaper could stop it, and
+        // attaching to it is still cheaper than a fresh boot.
         tracing::debug!(session = %record.id, "already running");
     } else {
         // A stopped machine costs the host nothing and a started one costs its whole
@@ -247,6 +264,7 @@ async fn resume(host: &Host, attach: &cli::Attach, mut record: SessionRecord) ->
         record,
         address,
         created: false,
+        lease,
     })
 }
 
@@ -262,7 +280,8 @@ async fn allocate(host: &Host) -> Result<SessionId> {
         let taken = live
             .iter()
             .any(|container| container.id.as_str() == id.as_str())
-            || host.session_path(&id).exists();
+            || host.session_path(&id).exists()
+            || host.session_lock_path(&id).exists();
         if !taken {
             return Ok(id);
         }

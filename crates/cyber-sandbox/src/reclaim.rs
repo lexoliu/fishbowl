@@ -13,9 +13,10 @@
 //! below the sandbox disk floor takes the least recently opened ones with it until the
 //! floor is clear again.
 //!
-//! A machine the runtime is currently running is never touched by either rule. It may be
-//! holding a researcher's shell, and no amount of disk pressure justifies pulling a
-//! debugger out from under someone.
+//! A running machine is only worth protecting while somebody holds it. The session's
+//! lock answers that exactly: one that cannot be taken is a live owner, and one that
+//! can is a machine left running by an invocation that is already gone — so those are
+//! stopped on sight, and the ordinary rules then judge them like any other.
 //!
 //! Images go by a third rule, which is reference. An image is named for the sources it
 //! was built from, so every upgrade of the tool leaves the previous one behind; one that
@@ -29,7 +30,7 @@ use anyhow::{Context as _, Result};
 use cyber_sandbox_runtime::{ContainerState, ImageReference, RunState, Sandbox, Workload};
 use jiff::Timestamp;
 
-use crate::{cli, host::Host, keys::SandboxKey, session::SessionRecord};
+use crate::{cli, host::Host, keys::SandboxKey, lease::Lease, session::SessionRecord};
 
 /// How long a session may go unopened before it is reclaimed.
 ///
@@ -52,9 +53,29 @@ pub async fn make_room(host: &Host, image: &ImageReference) -> Result<()> {
         .context("listing the runtime's containers")?;
     let now = Timestamp::now();
 
-    // Least recently opened first: that is the order both rules reclaim in.
+    // A running machine whose lock can be taken has no owner: the flock going free is
+    // the proof the invocation holding it ended without stopping it. Those are stopped
+    // on sight and then judged by the rules like everything else; one whose lock is
+    // held is a session in use, and is not touched.
     let mut candidates = host.sessions().await?;
-    candidates.retain(|record| !is_running(&live, record));
+    let mut held = Vec::new();
+    for record in &candidates {
+        if !is_running(&live, record) {
+            continue;
+        }
+        if Lease::try_lock(host, &record.id)?.is_some() {
+            tracing::info!(session = %record.id, "stopping a session whose owner is gone");
+            host.runtime()
+                .stop(&record.id.container_name()?)
+                .await
+                .with_context(|| format!("stopping the ownerless session {}", record.id))?;
+        } else {
+            held.push(record.id.clone());
+        }
+    }
+
+    // Least recently opened first: that is the order both rules reclaim in.
+    candidates.retain(|record| !held.contains(&record.id));
     candidates.reverse();
 
     let mut recent = Vec::new();

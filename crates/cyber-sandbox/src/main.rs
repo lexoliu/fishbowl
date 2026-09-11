@@ -11,6 +11,7 @@ mod handoff;
 mod host;
 mod image;
 mod keys;
+mod lease;
 mod loan;
 mod pick;
 mod provision;
@@ -42,5 +43,6 @@ async fn main() -> Result<()> {
         cli::Command::Devin(devin) => command::devin::run(&host, devin).await,
         cli::Command::Shell(shell) => command::shell::run(&host, shell).await,
         cli::Command::Audit(audit) => command::audit::follow(&host, audit).await,
+        cli::Command::Reap(reap) => lease::reap(&host, &reap.session).await,
     }
 }
