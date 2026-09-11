@@ -1,9 +1,11 @@
 use serde::{Deserialize, Serialize};
 
-/// npm packages installed so both agents can run their tool side inside the sandbox.
+/// npm packages providing the agents that run inside the sandbox.
 ///
-/// The model side, and with it every credential, stays on the host; these packages only
-/// provide the process the host's agent drives over SSH.
+/// Codex's is only its exec-server — the model side, and with it the credential, stays on
+/// the host. Claude Code's is the whole agent, lent a token for as long as it runs. Devin
+/// is not here at all: it is no npm package, and the image installs it by its own
+/// installer instead.
 pub const AGENT_PACKAGES: &[&str] = &["@anthropic-ai/claude-code", "@openai/codex"];
 
 /// Packages every sandbox needs regardless of profile: the control plane, the egress

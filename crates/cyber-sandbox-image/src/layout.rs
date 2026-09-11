@@ -121,4 +121,20 @@ impl SandboxLayout {
     pub fn audit_directory(&self) -> &Path {
         &self.audit_directory
     }
+
+    /// Home directory of the researcher account.
+    #[must_use]
+    pub fn researcher_home(&self) -> PathBuf {
+        PathBuf::from(format!("/home/{}", self.researcher.name))
+    }
+
+    /// Where Devin reads the credentials file the courier lends it.
+    ///
+    /// The path is Devin's own — it reads exactly here and nowhere else — so the loan is
+    /// delivered where the agent already looks rather than where it could be pointed.
+    #[must_use]
+    pub fn devin_credentials(&self) -> PathBuf {
+        self.researcher_home()
+            .join(".local/share/devin/credentials.toml")
+    }
 }

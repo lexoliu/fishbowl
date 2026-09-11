@@ -104,4 +104,16 @@ pub enum AgentError {
         #[source]
         source: toml_edit::TomlError,
     },
+    /// Nothing is stored where the researcher's Devin keeps its login.
+    #[error("no Devin login is stored at {}; run `devin auth login` on the host and sign in", path.display())]
+    NoDevinLogin {
+        /// Credentials file looked for.
+        path: PathBuf,
+    },
+    /// What is stored there does not carry the key that makes it a login.
+    #[error("{} is not the credentials file Devin writes: it carries no API key", path.display())]
+    NotDevinLogin {
+        /// File involved.
+        path: PathBuf,
+    },
 }

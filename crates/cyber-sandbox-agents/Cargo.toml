@@ -1,6 +1,6 @@
 [package]
 name = "cyber-sandbox-agents"
-description = "Registers a cyber-sandbox VM with the host's Claude Code and Codex installations."
+description = "Reads the host's agent logins for a cyber-sandbox session to borrow, and registers a session with Codex."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

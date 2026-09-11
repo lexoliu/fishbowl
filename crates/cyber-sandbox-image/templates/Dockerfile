@@ -98,18 +98,40 @@ RUN groupadd --gid {{ gateway_gid }} {{ gateway_user }} \
 
 # Codex runs only its exec-server here, with the model side and the credential left on
 # the host. Claude Code runs here in full, on a token the courier lends it for as long as
-# it runs; what stays on the host in that case is the login that renews the token.
+# it runs; what stays on the host in that case is the login that renews the token. Devin
+# runs here in full on the same arrangement, lent its credentials file rather than a
+# token.
 RUN npm install --global --no-fund --no-audit {{ agent_packages }}
+
+# Devin has no published package, so the third agent is installed by its own installer:
+# it fetches the bundle its manifest names and checks it against the manifest's checksum
+# before linking it into ~/.local/bin. That is inside the researcher's home on purpose —
+# the CLI's self-updater writes beside it — and the install runs as the researcher for
+# the same reason, with HOME pinned because a build-time USER does not set it. The test
+# at the end fails the build, rather than the session, if the binary does not land where
+# the courier goes looking for it.
+USER {{ researcher_user }}
+RUN curl --fail --silent --show-error --location https://cli.devin.ai/install.sh \
+      | env HOME=/home/{{ researcher_user }} bash \
+ && test -x /home/{{ researcher_user }}/.local/bin/devin
+USER root
 
 # The first-run questions, answered. Claude Code otherwise opens a session by asking
 # about a colour scheme, about trusting a directory this image created, and about running
-# without approvals — three questions about a machine the researcher asked for by name,
+# without approvals — and Devin by asking to finish its shell setup and to trust the
+# same directory. They are questions about a machine the researcher asked for by name,
 # in front of an agent that was started to work unattended.
 COPY claude.json /home/{{ researcher_user }}/.claude.json
 COPY claude-settings.json /home/{{ researcher_user }}/.claude/settings.json
 COPY statusline.sh {{ status_line_program }}
+COPY devin-config.json /home/{{ researcher_user }}/.config/devin/config.json
+COPY devin-trusted-workspaces.json \
+     /home/{{ researcher_user }}/.local/share/devin/cli/trusted_workspaces.json
 RUN chown -R {{ researcher_uid }}:{{ researcher_gid }} /home/{{ researcher_user }}/.claude.json \
       /home/{{ researcher_user }}/.claude \
+      /home/{{ researcher_user }}/.config \
+ && chown {{ researcher_uid }}:{{ researcher_gid }} \
+      /home/{{ researcher_user }}/.local/share/devin/cli/trusted_workspaces.json \
  && chmod 0600 /home/{{ researcher_user }}/.claude.json \
       /home/{{ researcher_user }}/.claude/settings.json \
  && chmod 0755 {{ status_line_program }}

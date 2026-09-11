@@ -39,6 +39,7 @@ async fn main() -> Result<()> {
     match &arguments.command {
         cli::Command::Claude(claude) => command::claude::run(&host, claude).await,
         cli::Command::Codex(codex) => command::codex::run(&host, codex).await,
+        cli::Command::Devin(devin) => command::devin::run(&host, devin).await,
         cli::Command::Shell(shell) => command::shell::run(&host, shell).await,
         cli::Command::Audit(audit) => command::audit::follow(&host, audit).await,
     }

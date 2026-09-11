@@ -41,6 +41,8 @@ pub enum Command {
     Claude(Claude),
     /// Opens Codex on an isolated research session.
     Codex(Codex),
+    /// Opens Devin on an isolated research session.
+    Devin(Devin),
     /// Opens a shell in an isolated research session.
     Shell(Shell),
     /// Follows a session's network audit trail.
@@ -91,6 +93,18 @@ pub struct Claude {
 /// runs in the session. There is nothing to configure beyond which session that is.
 #[derive(Debug, Args)]
 pub struct Codex {
+    #[command(flatten)]
+    pub attach: Attach,
+}
+
+/// Arguments of `devin`.
+///
+/// Devin runs inside the session for the same reason Claude Code does: it is one program
+/// with no tool side to leave on the host. What it is lent is its credentials file, whole
+/// — Devin keeps no refresh token beside it to hold back, and the file is taken off the
+/// disk again when the agent exits.
+#[derive(Debug, Args)]
+pub struct Devin {
     #[command(flatten)]
     pub attach: Attach,
 }

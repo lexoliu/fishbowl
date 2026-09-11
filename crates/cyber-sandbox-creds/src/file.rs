@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeMap,
     ffi::OsString,
+    os::unix::fs::PermissionsExt as _,
     path::{Path, PathBuf},
 };
 
@@ -54,11 +55,6 @@ pub struct Credentials {
 impl Credentials {
     /// Writes the file where Claude Code is expecting it.
     ///
-    /// The bytes land in a sibling first and are renamed over the target, so a reader
-    /// that arrives mid-rotation sees the old credential or the new one and never half of
-    /// either. The mode is set as the file is created rather than after, because a
-    /// credential that is briefly world-readable has briefly been readable by the world.
-    ///
     /// # Errors
     /// Fails when the file cannot be encoded, would be larger than Claude Code reads, or
     /// cannot be written.
@@ -69,48 +65,68 @@ impl Credentials {
                 size: encoded.len(),
             });
         }
-
-        let staging = staging_path(path);
-        let mut file = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(MODE)
-            .open(&staging)
-            .await
-            .map_err(|source| CredentialError::Io {
-                path: staging.clone(),
-                source,
-            })?;
-        file.write_all(&encoded)
-            .await
-            .map_err(|source| CredentialError::Io {
-                path: staging.clone(),
-                source,
-            })?;
-        drop(file);
-
-        tokio::fs::rename(&staging, path)
-            .await
-            .map_err(|source| CredentialError::Io {
-                path: path.to_path_buf(),
-                source,
-            })
+        install(path, &encoded).await
     }
+}
 
-    /// Takes the file back, tolerating one that is already gone.
-    ///
-    /// # Errors
-    /// Fails when the file is there but cannot be removed.
-    pub async fn remove(path: &Path) -> Result<(), CredentialError> {
-        match tokio::fs::remove_file(path).await {
-            Ok(()) => Ok(()),
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(source) => Err(CredentialError::Io {
-                path: path.to_path_buf(),
-                source,
-            }),
-        }
+/// Writes `contents` at `path` the way every borrowed credential is written.
+///
+/// The bytes land in a sibling first and are renamed over the target, so a reader that
+/// arrives mid-rotation sees the old credential or the new one and never half of either.
+/// The mode is asserted on the staging file rather than only at its creation, because a
+/// file a crashed run left behind would otherwise carry whatever mode it already had
+/// through the rename — and a credential that is briefly world-readable has briefly been
+/// readable by the world.
+///
+/// # Errors
+/// Fails when the staging file or the rename cannot be written.
+pub async fn install(path: &Path, contents: &[u8]) -> Result<(), CredentialError> {
+    let staging = staging_path(path);
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(MODE)
+        .open(&staging)
+        .await
+        .map_err(|source| CredentialError::Io {
+            path: staging.clone(),
+            source,
+        })?;
+    file.set_permissions(std::fs::Permissions::from_mode(MODE))
+        .await
+        .map_err(|source| CredentialError::Io {
+            path: staging.clone(),
+            source,
+        })?;
+    file.write_all(contents)
+        .await
+        .map_err(|source| CredentialError::Io {
+            path: staging.clone(),
+            source,
+        })?;
+    drop(file);
+
+    tokio::fs::rename(&staging, path)
+        .await
+        .map_err(|source| CredentialError::Io {
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
+/// Takes a borrowed file back, tolerating one that is already gone.
+///
+/// # Errors
+/// Fails when the file is there but cannot be removed.
+pub async fn remove(path: &Path) -> Result<(), CredentialError> {
+    match tokio::fs::remove_file(path).await {
+        Ok(()) => Ok(()),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(CredentialError::Io {
+            path: path.to_path_buf(),
+            source,
+        }),
     }
 }
 
@@ -127,7 +143,7 @@ fn staging_path(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    use std::os::unix::fs::MetadataExt as _;
 
     use tempfile::TempDir;
 
@@ -215,10 +231,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_document_is_installed_verbatim_and_only_for_its_owner() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("nested").join("credentials.toml");
+        tokio::fs::create_dir_all(path.parent().unwrap())
+            .await
+            .unwrap();
+
+        install(&path, b"windsurf_api_key = \"devin-session-x\"\n")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            tokio::fs::read_to_string(&path).await.unwrap(),
+            "windsurf_api_key = \"devin-session-x\"\n",
+            "a lent document is the host's bytes and nothing else"
+        );
+        assert_eq!(
+            tokio::fs::metadata(&path)
+                .await
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            MODE
+        );
+    }
+
+    #[tokio::test]
     async fn taking_back_a_file_that_is_already_gone_is_not_a_failure() {
         let directory = TempDir::new().unwrap();
 
-        Credentials::remove(&directory.path().join("claude-creds.json"))
+        remove(&directory.path().join("claude-creds.json"))
             .await
             .unwrap();
     }

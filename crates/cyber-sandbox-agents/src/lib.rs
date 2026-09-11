@@ -1,36 +1,42 @@
 //! What the host's agents need before a session can run them.
 //!
-//! The two agents want opposite things. Codex keeps its model side — and with it the
-//! credential — on the host and runs only its tool side in the session, which takes an
-//! entry in its own configuration file. Claude Code runs whole inside the session and is
-//! lent the researcher's access token to do it, which takes reading the login the
-//! researcher already has. So this crate both edits Codex's files and reads Claude's
-//! keychain entry, and neither agent ever needs the session to have a login of its own.
+//! The three agents want three different things. Codex keeps its model side — and with
+//! it the credential — on the host and runs only its tool side in the session, which
+//! takes an entry in its own configuration file. Claude Code and Devin have no such
+//! split: they run whole inside the session and are lent the researcher's login to do
+//! it, an access token for one and the credentials file for the other. So this crate
+//! edits Codex's files, reads Claude's keychain entry and reads Devin's file, and no
+//! agent ever needs the session to have a login of its own.
 //!
 //! Existing configuration is preserved: Codex's files are edited as TOML documents, so
-//! hand-written entries and comments survive, and Claude's keychain entry is only read.
+//! hand-written entries and comments survive, and Claude's and Devin's logins are only
+//! read.
 
 mod claude;
 mod codex;
+mod devin;
 mod endpoint;
 mod error;
 mod toml_file;
 
 pub use claude::ClaudeLogin;
 pub use codex::{Codex, CodexConfig, CodexEnvironments};
+pub use devin::DevinLogin;
 pub use endpoint::SandboxEndpoint;
 pub use error::AgentError;
 
 use std::path::{Path, PathBuf};
 
-/// The host-side configuration a sandbox writes itself into.
+/// The host-side configuration a sandbox writes itself into, and the logins a session
+/// can borrow from.
 ///
-/// Only Codex has any: Claude Code is run inside the session rather than pointed at it,
-/// so there is nothing about a session for the host's Claude Code to remember, and
-/// nothing left behind when one ends.
+/// Only Codex has any configuration: Claude Code and Devin are run inside the session
+/// rather than pointed at it, so there is nothing about a session for the host's copies
+/// to remember, and nothing left behind when one ends.
 #[derive(Debug, Clone)]
 pub struct AgentIntegration {
     codex: Codex,
+    devin: DevinLogin,
 }
 
 impl AgentIntegration {
@@ -39,6 +45,7 @@ impl AgentIntegration {
     pub fn for_home(home: &Path) -> Self {
         Self {
             codex: Codex::for_home(home),
+            devin: DevinLogin::for_home(home),
         }
     }
 
@@ -46,6 +53,12 @@ impl AgentIntegration {
     #[must_use]
     pub fn codex(&self) -> &Codex {
         &self.codex
+    }
+
+    /// The researcher's Devin login, which a session borrows for the length of a run.
+    #[must_use]
+    pub fn devin(&self) -> &DevinLogin {
+        &self.devin
     }
 
     /// Removes the entries belonging to `id`.
