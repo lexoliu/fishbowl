@@ -77,16 +77,11 @@ pub async fn run(host: &Host, arguments: &cli::Codex) -> Result<()> {
     let codex = agents.codex();
 
     let work_alias = host.work_alias_of(&record.id).await?;
-    let instructions = match handoff.briefing() {
-        Some(briefing) => Some(
-            codex
-                .config()
-                .developer_instructions_with(&briefing)
-                .await
-                .context("reading codex's developer instructions")?,
-        ),
-        None => None,
-    };
+    let instructions = codex
+        .config()
+        .developer_instructions_with(&handoff.briefing(host.layout()))
+        .await
+        .context("reading codex's developer instructions")?;
 
     codex
         .register(&endpoint)
@@ -94,7 +89,7 @@ pub async fn run(host: &Host, arguments: &cli::Codex) -> Result<()> {
         .with_context(|| format!("adding session {} to codex's configuration", record.id))?;
     let previous = preselect(codex, &record.id).await?;
 
-    let status = supervise(&work_alias, instructions.as_deref()).await;
+    let status = supervise(&work_alias, Some(&instructions)).await;
 
     // Before the run is reported, and whatever it did: an entry left behind is a dead
     // machine in the researcher's environment list, and a preselection left behind would

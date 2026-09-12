@@ -4,10 +4,14 @@
 # Every packet a non-gateway uid emits is either redirected to the gateway, where it is
 # audited, or logged to NFLOG group {{ nflog_group }} and dropped. There is no third path,
 # so an empty audit trail means the sandbox sent nothing rather than that something
-# escaped unrecorded.
+# escaped unrecorded. The detonation account is the one exception, and the exception is
+# a cut rather than a hole: its packets are never redirected, so everything it sends is
+# refused. A detonated sample has no network, because this machine is virtualized, not
+# network-isolated — traffic the gateway would relay is traffic a C2 would really get.
 set -euo pipefail
 
 readonly GATEWAY_UID={{ gateway_uid }}
+readonly DETONATE_UID={{ detonate_uid }}
 readonly PROXY_PORT={{ proxy_port }}
 readonly DNS_PORT={{ dns_port }}
 readonly SSH_PORT={{ ssh_port }}
@@ -28,9 +32,13 @@ iptables -A INPUT -p tcp --dport "${SSH_PORT}" -j ACCEPT
 iptables -P FORWARD DROP
 
 # Outbound redirection. The gateway's own traffic is exempt, otherwise it would redirect
-# into itself; every other uid is forced through it.
+# into itself; every other uid is forced through it. The detonation uid is exempted too,
+# but for the opposite reason: skipping the redirect sends its packets to the filter
+# table's tail, which records and drops them. Loopback still works, so a sample can be
+# talked to through a local listener — it just cannot leave the machine.
 iptables -t nat -A OUTPUT -m owner --uid-owner "${GATEWAY_UID}" -j RETURN
 iptables -t nat -A OUTPUT -o lo -j RETURN
+iptables -t nat -A OUTPUT -m owner --uid-owner "${DETONATE_UID}" -j RETURN
 iptables -t nat -A OUTPUT -p tcp -j REDIRECT --to-ports "${PROXY_PORT}"
 iptables -t nat -A OUTPUT -p udp --dport 53 -j REDIRECT --to-ports "${DNS_PORT}"
 

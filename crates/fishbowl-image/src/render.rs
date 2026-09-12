@@ -80,6 +80,8 @@ pub struct Detonate {
 pub struct EgressPolicy {
     /// Gateway uid, exempted from redirection.
     pub gateway_uid: u32,
+    /// Detonation uid, exempted from redirection so its traffic is dropped instead.
+    pub detonate_uid: u32,
     /// Transparent proxy port.
     pub proxy_port: u16,
     /// Intercepting resolver port.
@@ -202,6 +204,7 @@ impl RenderedImage {
         .render()?;
         let egress_policy = EgressPolicy {
             gateway_uid: layout.gateway.uid,
+            detonate_uid: layout.detonate.uid,
             proxy_port: layout.proxy_port,
             dns_port: layout.dns_port,
             ssh_port: layout.ssh_port,

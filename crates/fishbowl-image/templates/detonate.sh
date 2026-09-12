@@ -4,10 +4,11 @@
 # The researcher's shell and both agents run as {{ researcher_user }}, which is the account
 # an agent's borrowed token is written for. A sample run under that uid could simply read
 # the file, so it is run under {{ detonate_user }}: no credential is ever written for that
-# account, and the directory the courier writes into is closed to it.
+# account, the directory the courier writes into is closed to it, and the packet filter
+# drops its traffic outright — a detonated sample has no network at all.
 #
 # This does not make a sample safe. It is one uid inside a machine that is itself the
-# boundary, and every packet it sends is still audited or refused.
+# boundary; the network is only the most visible of the things it still shares.
 set -euo pipefail
 
 if [ "$#" -eq 0 ]; then
