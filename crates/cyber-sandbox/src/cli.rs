@@ -45,6 +45,12 @@ pub enum Command {
     Shell(Shell),
     /// Follows a session's network audit trail.
     Audit(Audit),
+    /// Stops a session's machine once the invocation holding it is gone.
+    ///
+    /// Never typed by a person: a session's own opening spawns it, and it reads the
+    /// owner's death off its standard input.
+    #[command(hide = true)]
+    Reap(Reap),
 }
 
 /// Which session to work in, and how a new one is furnished.
@@ -119,6 +125,13 @@ pub struct Shell {
     /// Command to run instead of an interactive shell.
     #[arg(trailing_var_arg = true)]
     pub command: Vec<String>,
+}
+
+/// Arguments of `reap`, the undertaker a session's opening spawns for it.
+#[derive(Debug, Args)]
+pub struct Reap {
+    /// Session whose machine this process stops.
+    pub session: SessionId,
 }
 
 /// Arguments of `audit`.

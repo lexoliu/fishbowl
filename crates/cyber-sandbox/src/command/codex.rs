@@ -20,7 +20,14 @@ use tokio::{
     signal::unix::{SignalKind, signal},
 };
 
-use crate::{cli, command::banner, handoff::Handoff, host::Host, provision, session::SessionId};
+use crate::{
+    cli,
+    command::{self, banner},
+    handoff::Handoff,
+    host::Host,
+    provision,
+    session::SessionId,
+};
 
 /// How Codex is asked to run: never stopping to ask, never sandboxing what it runs.
 ///
@@ -93,6 +100,7 @@ pub async fn run(host: &Host, arguments: &cli::Codex) -> Result<()> {
     // machine in the researcher's environment list, and a preselection left behind would
     // silently capture the next `codex` they start by hand.
     restore(codex, &record.id, previous.as_deref()).await?;
+    command::epilogue(&session, "codex")?;
 
     match status? {
         status if status.success() => Ok(()),
