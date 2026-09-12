@@ -21,8 +21,11 @@ jobs:
       - uses: release-plz/action@v0.5
         with:
           command: release-pr
+        # A PAT rather than GITHUB_TOKEN: anything the token creates — release PRs,
+        # tags, releases — fires no further workflows, and a release that fires none
+        # never reaches the image job that tags the version an installed binary pulls.
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GHCR_TOKEN }}
       # Mint a short-lived crates.io token from the GitHub OIDC identity
       # instead of a stored CARGO_REGISTRY_TOKEN. Trusted publishing is
       # configured per crate on crates.io; a crate that has never been
@@ -35,6 +38,6 @@ jobs:
         with:
           command: release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GHCR_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
 
