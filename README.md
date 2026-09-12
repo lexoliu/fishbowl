@@ -83,6 +83,13 @@ token an agent holds does not travel into a sample the agent starts. The working
 is shared between the two accounts, because that is where the sample and what it leaves
 behind both belong.
 
+The researcher account has passwordless `sudo` — the machine is disposable and the
+boundary is around it, not inside it, so kernel debugging and system changes are yours.
+What root still cannot touch is the packet filter: `CAP_NET_ADMIN` is dropped from the
+bounding set before `sshd` starts, so no process inside can alter egress. The
+`detonate` account alone is given no `sudo` rule, so a sample never finds a way out of
+its uid.
+
 A detonated sample has no network. The machine is virtualized rather than
 network-isolated, so traffic a sample sent under the researcher's uid would reach the
 real internet — the packet filter therefore drops everything the detonation account

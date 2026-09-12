@@ -514,7 +514,7 @@ mod tests {
     }
 
     #[test]
-    fn the_only_account_a_sample_can_become_is_the_one_it_started_as() {
+    fn the_researcher_gets_the_whole_machine_and_a_sample_gets_no_way_out() {
         let rendered = rendered();
         let rules: Vec<&str> = rendered
             .sudoers
@@ -523,13 +523,15 @@ mod tests {
             .collect();
         assert_eq!(
             rules,
-            vec!["researcher ALL=(detonate:detonate) NOPASSWD: ALL"],
-            "one rule, naming one account on each side: anything else is a way out of \
-             the uid a sample was started under"
+            vec!["researcher ALL=(ALL:ALL) NOPASSWD: ALL"],
+            "one rule: the boundary is around the VM rather than inside it, so root is \
+             the researcher's for whatever the analysis calls for — the egress policy \
+             was made unreachable by dropping CAP_NET_ADMIN from the bounding set, not \
+             by keeping root from anyone"
         );
         assert!(
-            !rendered.sudoers.contains("(ALL"),
-            "a rule whose right-hand side is ALL includes root: {}",
+            !rendered.sudoers.contains("detonate ALL"),
+            "the account samples run under is given no rule at all: {}",
             rendered.sudoers
         );
     }
