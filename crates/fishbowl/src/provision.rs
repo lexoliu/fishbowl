@@ -393,12 +393,20 @@ async fn wait_until_reachable(
 
     while tokio::time::Instant::now() < deadline {
         match host.runtime().inspect(name).await {
-            Ok(state) => match state.ipv4_address() {
-                Some(address) if accepts(SocketAddr::from((address, ssh_port))).await => {
-                    return Ok(address);
-                }
-                Some(address) => last = format!("{address} is not answering yet"),
-                None => "the runtime has not reported an address yet".clone_into(&mut last),
+            Ok(state) => match state.status.state {
+                // A stopped container never gains an address; waiting the full timeout
+                // just delays the error its logs already explain.
+                RunState::Stopped => bail!(
+                    "session {name} stopped while starting up. Its startup output is \
+                     available with `container logs {name}`"
+                ),
+                _ => match state.ipv4_address() {
+                    Some(address) if accepts(SocketAddr::from((address, ssh_port))).await => {
+                        return Ok(address);
+                    }
+                    Some(address) => last = format!("{address} is not answering yet"),
+                    None => "the runtime has not reported an address yet".clone_into(&mut last),
+                },
             },
             Err(error) => last = error.to_string(),
         }
