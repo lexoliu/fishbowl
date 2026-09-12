@@ -765,7 +765,7 @@ checksum = "d45db016d36b838f563236e9193d0ee6ce38f3f68b6c94e914b4929c96bbb890"
 
 [[package]]
 name = "fishbowl"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "askama",
@@ -791,7 +791,7 @@ dependencies = [
 
 [[package]]
 name = "fishbowl-agents"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "fishbowl-creds",
  "jiff",
@@ -808,7 +808,7 @@ dependencies = [
 
 [[package]]
 name = "fishbowl-audit"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "jiff",
  "serde",
@@ -819,7 +819,7 @@ dependencies = [
 
 [[package]]
 name = "fishbowl-courier"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -833,7 +833,7 @@ dependencies = [
 
 [[package]]
 name = "fishbowl-creds"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "jiff",
  "serde",
@@ -845,7 +845,7 @@ dependencies = [
 
 [[package]]
 name = "fishbowl-gateway"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -874,7 +874,7 @@ dependencies = [
 
 [[package]]
 name = "fishbowl-image"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "askama",
  "clap",
@@ -890,7 +890,7 @@ dependencies = [
 
 [[package]]
 name = "fishbowl-runtime"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "jiff",
  "serde",
