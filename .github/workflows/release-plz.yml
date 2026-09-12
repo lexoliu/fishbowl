@@ -18,7 +18,7 @@ jobs:
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-      - uses: release-plz/action@v0
+      - uses: release-plz/action@v0.5
         with:
           command: release-pr
         env:
@@ -31,7 +31,7 @@ jobs:
       - uses: rust-lang/crates-io-auth-action@v1
         id: crates-io-auth
         continue-on-error: true
-      - uses: release-plz/action@v0
+      - uses: release-plz/action@v0.5
         with:
           command: release
         env:
