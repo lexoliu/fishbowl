@@ -1,19 +1,17 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
-use cyber_sandbox_image::ToolProfile;
 use cyber_sandbox_runtime::Arch;
 
 use crate::session::SessionId;
 
-/// Repository the sandbox image is built into.
-pub const IMAGE_REPOSITORY: &str = "localhost/cyber-sandbox";
+/// Repository the sandbox image is published under and pulled from.
+pub const IMAGE_REPOSITORY: &str = "ghcr.io/lexoliu/cyber-sandbox";
 
-/// Kali image the sandbox derives from.
-pub const DEFAULT_BASE_IMAGE: &str = "docker.io/kalilinux/kali-rolling:latest";
-
-/// How much of the Kali toolchain the sandbox image installs.
-pub const DEFAULT_PROFILE: ToolProfile = ToolProfile::Core;
+/// Repository images were built under before the registry existed.
+///
+/// Sessions created then still name it, so reclamation keeps recognising them.
+pub const LEGACY_IMAGE_REPOSITORY: &str = "localhost/cyber-sandbox";
 
 /// Resolver the in-sandbox gateway forwards DNS to.
 ///
@@ -71,9 +69,13 @@ pub struct Attach {
     /// agrees with what the session already is.
     #[arg(long)]
     pub arch: Option<Arch>,
-    /// Checkout the audit gateway is compiled from, if the image has to be built first.
-    #[arg(long, default_value = ".")]
-    pub workspace: PathBuf,
+    /// Checkout the image is compiled from, forcing a local build.
+    ///
+    /// Without it, an invocation from inside a checkout still builds from it — the
+    /// sources on disk are what the guest programs must agree with — and any other
+    /// directory pulls the image this version was published as.
+    #[arg(long)]
+    pub workspace: Option<PathBuf>,
 }
 
 /// Arguments of `claude`.

@@ -42,11 +42,18 @@ cyber-sandbox shell --resume              # pick a session to come back to
 cyber-sandbox claude --resume c0ffee      # or name it
 ```
 
-The first run builds the Kali image with the gateway compiled into it, from the checkout
-you run it in. Every run after that starts in seconds. The image is named for the digest of
-the sources it was built from, so upgrading cyber-sandbox rebuilds it on the next new
-session and an unchanged one never does; a session keeps the image it was created from,
-and images no session refers to are removed on the way in to the next one.
+The first run pulls the Kali image — with the gateway compiled into it — from
+`ghcr.io/lexoliu/cyber-sandbox`, where CI builds it per architecture for every merge and
+tags it with the tool's version for every release. Nothing is compiled on your machine.
+The image a checkout would build is named for the digest of its sources, so an image CI
+already pushed under that name is pulled rather than rebuilt; upgrading cyber-sandbox
+replaces the image on the next new session and an unchanged one never does. A session
+keeps the image it was created from, and images no session refers to are removed on the
+way in to the next one.
+
+Run from a checkout — or point `--workspace` at one — and the sources there are what the
+guest is compiled from: the image is built locally only when the registry does not
+already hold exactly that digest.
 
 ## Detonating a sample
 
@@ -161,7 +168,7 @@ untouched — its credentials file is read, never written.
 |---|---|
 | `cyber-sandbox` | The CLI |
 | `cyber-sandbox-runtime` | Typed driver for the `container` CLI |
-| `cyber-sandbox-image` | Renders the Dockerfile, entrypoint and egress policy |
+| `cyber-sandbox-image` | Renders the Dockerfile, entrypoint and egress policy; stages the build context |
 | `cyber-sandbox-gateway` | The in-guest auditing proxy (Linux only) |
 | `cyber-sandbox-courier` | Holds an agent's borrowed credential in-guest (Linux only) |
 | `cyber-sandbox-creds` | The borrowed credential's wire and on-disk formats |

@@ -116,9 +116,14 @@ fn unreferenced<'a>(
     sessions: &[SessionRecord],
     keep: &ImageReference,
 ) -> Vec<&'a ImageReference> {
-    let prefix = format!("{}:", cli::IMAGE_REPOSITORY);
+    let repositories = [cli::IMAGE_REPOSITORY, cli::LEGACY_IMAGE_REPOSITORY]
+        .map(|repository| format!("{repository}:"));
     held.iter()
-        .filter(|image| image.as_str().starts_with(&prefix))
+        .filter(|image| {
+            repositories
+                .iter()
+                .any(|prefix| image.as_str().starts_with(prefix))
+        })
         .filter(|image| *image != keep)
         .filter(|image| !sessions.iter().any(|record| record.image == **image))
         .collect()
@@ -219,19 +224,24 @@ mod tests {
         let held = [
             image("docker.io/kalilinux/kali-rolling:latest"),
             image("ghcr.io/apple/container-builder-shim/builder:0.13.1"),
+            image("ghcr.io/lexoliu/cyber-sandbox:arm64-0123456789ab"),
+            image("ghcr.io/lexoliu/cyber-sandbox:arm64-fedcba987654"),
+            image("ghcr.io/lexoliu/cyber-sandbox:amd64-0123456789ab"),
             image("localhost/cyber-sandbox:arm64-0123456789ab"),
-            image("localhost/cyber-sandbox:arm64-fedcba987654"),
-            image("localhost/cyber-sandbox:amd64-0123456789ab"),
         ];
         let mut in_use = record("c0ffee", Timestamp::now());
-        in_use.image = image("localhost/cyber-sandbox:amd64-0123456789ab");
-        let keep = image("localhost/cyber-sandbox:arm64-fedcba987654");
+        in_use.image = image("ghcr.io/lexoliu/cyber-sandbox:amd64-0123456789ab");
+        let keep = image("ghcr.io/lexoliu/cyber-sandbox:arm64-fedcba987654");
 
         assert_eq!(
             unreferenced(&held, &[in_use], &keep),
-            vec![&image("localhost/cyber-sandbox:arm64-0123456789ab")],
+            vec![
+                &image("ghcr.io/lexoliu/cyber-sandbox:arm64-0123456789ab"),
+                &image("localhost/cyber-sandbox:arm64-0123456789ab"),
+            ],
             "the base image and the builder are not this tool's; the image a session was \
-             created from and the one about to be used are still wanted"
+             created from and the one about to be used are still wanted — and that holds \
+             for images built before the registry existed"
         );
     }
 

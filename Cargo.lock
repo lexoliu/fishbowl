@@ -629,6 +629,7 @@ name = "cyber-sandbox-image"
 version = "0.1.0"
 dependencies = [
  "askama",
+ "clap",
  "cyber-sandbox-runtime",
  "serde",
  "serde_json",
