@@ -1,17 +1,19 @@
-//! Lending the researcher's Claude Code login to a session for as long as it is open.
+//! Lending the researcher's agent login to a session for as long as it is open.
 //!
-//! Claude Code runs inside the session, so unlike Codex it needs a credential there. What
-//! it is given is an access token and nothing else: the refresh token beside it in the
+//! The agents that run inside the session need a credential there. What Claude Code is
+//! given is an access token and nothing else: the refresh token beside it in the
 //! researcher's keychain is what their own Claude Code renews its login with, and
 //! renewing rotates it, so a session that spent it would log them out of their own
-//! machine. The token that does cross expires on its own within hours.
+//! machine. The token that does cross expires on its own within hours. Devin has no such
+//! expiry to lean on: its credentials file is lent whole, so the loan ends not with a
+//! clock but with the courier taking the file back when the agent exits.
 //!
-//! It crosses over a unix socket the host owns, published inside the session by ssh as a
-//! remote forward, and is answered one token per connection. That shape is deliberate:
-//! nothing is written down on the host, the session cannot reach the socket after the ssh
-//! connection ends, and the courier can come back for a fresh token when the one it holds
-//! is nearly out — which is how a session outlives a single token's lifetime without ever
-//! being handed the credential that mints them.
+//! Either crosses over a unix socket the host owns, published inside the session by ssh
+//! as a remote forward, and is answered one credential per connection. That shape is
+//! deliberate: nothing is written down on the host, the session cannot reach the socket
+//! after the ssh connection ends, and the courier can come back for a fresh credential
+//! when the one it holds is nearly out — which is how a session outlives a single
+//! token's lifetime, or a host-side re-login, without ever being handed what renews it.
 
 use std::{
     io::ErrorKind,
@@ -20,8 +22,8 @@ use std::{
 };
 
 use anyhow::{Context as _, Result, bail};
-use cyber_sandbox_agents::ClaudeLogin;
-use cyber_sandbox_creds::Bearer;
+use cyber_sandbox_agents::{ClaudeLogin, DevinLogin};
+use cyber_sandbox_creds::{Bearer, Lent};
 use jiff::{Timestamp, ToSpan as _};
 use tokio::net::{UnixListener, UnixStream};
 
@@ -87,7 +89,22 @@ impl Attachment {
     }
 }
 
-/// A socket handing out the researcher's access token, and the task serving it.
+/// Where the credential lent over a socket comes from.
+///
+/// Each arm is one agent's host-side login: what is lent, and how often it is re-read,
+/// is that agent's business. Claude's token is remembered between asks because re-reading
+/// the keychain is a question the operating system may put to the researcher; Devin's
+/// file is re-read every ask because reading it is silent and a re-login on the host
+/// should reach the session at the next renewal.
+#[derive(Debug)]
+pub enum Lender {
+    /// The Claude Code keychain entry, lent as its access token.
+    Claude(ClaudeLogin),
+    /// The Devin credentials file, lent whole.
+    Devin(DevinLogin),
+}
+
+/// A socket handing out the researcher's credential, and the task serving it.
 #[derive(Debug)]
 pub struct Loan {
     socket: PathBuf,
@@ -95,12 +112,12 @@ pub struct Loan {
 }
 
 impl Loan {
-    /// Starts lending from `login` on a socket at `socket`.
+    /// Starts lending from `lender` on a socket at `socket`.
     ///
     /// # Errors
     /// Fails when the socket path is longer than one can be bound at, or when it cannot
     /// be bound.
-    pub async fn open(login: ClaudeLogin, socket: PathBuf) -> Result<Self> {
+    pub async fn open(lender: Lender, socket: PathBuf) -> Result<Self> {
         if socket.as_os_str().len() >= MAX_SOCKET_PATH {
             bail!(
                 "{} is too long to bind a socket at ({} bytes, and the limit is {})",
@@ -115,7 +132,7 @@ impl Loan {
 
         Ok(Self {
             socket,
-            server: tokio::spawn(serve(login, listener)),
+            server: tokio::spawn(serve(lender, listener)),
         })
     }
 
@@ -164,25 +181,25 @@ async fn prepare(socket: &Path) -> Result<()> {
     }
 }
 
-/// Answers every connection with a token, read from the keychain when the one in hand is
-/// gone or about to go.
+/// Answers every connection with a credential, read from the login when the one in hand
+/// is gone or about to go.
 ///
-/// Remembered rather than read every time, because a keychain read is a question the
-/// operating system may put to the researcher — and the session asks every few minutes.
-/// A token in hand is good until it expires whatever the researcher's own Claude Code
-/// renews meanwhile, so nothing is lost by keeping it; it is read again as expiry nears,
-/// which is when the renewed login is the one that matters. A token without a stated
-/// expiry is kept for the run.
+/// A Claude token is remembered rather than read every time, because a keychain read is a
+/// question the operating system may put to the researcher — and the session asks every
+/// few minutes. A token in hand is good until it expires whatever the researcher's own
+/// Claude Code renews meanwhile, so nothing is lost by keeping it; it is read again as
+/// expiry nears, which is when the renewed login is the one that matters. A token without
+/// a stated expiry is kept for the run.
 ///
 /// A connection that fails is logged and dropped. The session is untrusted, so a client
 /// that hangs up mid-sentence is an ordinary event, and it must not end the lending for
 /// the connection that comes after it.
-async fn serve(login: ClaudeLogin, listener: UnixListener) {
+async fn serve(lender: Lender, listener: UnixListener) {
     let mut in_hand = None;
     loop {
         match listener.accept().await {
             Ok((stream, _)) => {
-                if let Err(error) = lend(&login, &mut in_hand, stream).await {
+                if let Err(error) = lend(&lender, &mut in_hand, stream).await {
                     tracing::warn!("could not lend the login to the session: {error:#}");
                 }
             }
@@ -194,22 +211,35 @@ async fn serve(login: ClaudeLogin, listener: UnixListener) {
     }
 }
 
-/// Writes the part of the login a session may have, reading the login first unless the
-/// token from last time is still good for a while.
-async fn lend(login: &ClaudeLogin, in_hand: &mut Option<Bearer>, stream: UnixStream) -> Result<()> {
-    let bearer = match in_hand
-        .take()
-        .filter(|bearer| is_still_good(bearer, Timestamp::now()))
-    {
-        Some(bearer) => bearer,
-        None => login.bearer().await.context("reading the login to lend")?,
+/// Writes the credential a session may have over the connection.
+///
+/// For Claude that is the bearer from last time while it is still good for a while. For
+/// Devin it is the credentials file read fresh: the file holds no expiry to schedule a
+/// re-read by, and the read costs no prompt, so every ask gets whatever the host's Devin
+/// is currently logged in as.
+async fn lend(lender: &Lender, in_hand: &mut Option<Bearer>, stream: UnixStream) -> Result<()> {
+    let lent = match lender {
+        Lender::Claude(login) => {
+            let bearer = match in_hand
+                .take()
+                .filter(|bearer| is_still_good(bearer, Timestamp::now()))
+            {
+                Some(bearer) => bearer,
+                None => login.bearer().await.context("reading the login to lend")?,
+            };
+            *in_hand = Some(bearer.clone());
+            Lent::Bearer(bearer)
+        }
+        Lender::Devin(login) => Lent::Document(
+            login
+                .document()
+                .await
+                .context("reading the login to lend")?,
+        ),
     };
-    bearer
-        .send(stream)
+    lent.send(stream)
         .await
-        .context("handing the token to the session")?;
-    *in_hand = Some(bearer);
-    Ok(())
+        .context("handing the credential to the session")
 }
 
 /// Whether `bearer` can be handed out at `now` without going back to the keychain.
@@ -271,7 +301,7 @@ mod tests {
         let directory = TempDir::new().unwrap();
         let socket = directory.path().join("x".repeat(MAX_SOCKET_PATH));
 
-        let refused = Loan::open(ClaudeLogin::discover(), socket)
+        let refused = Loan::open(Lender::Claude(ClaudeLogin::discover()), socket)
             .await
             .unwrap_err();
 
@@ -321,19 +351,25 @@ mod tests {
         let listener = UnixListener::bind(&socket).unwrap();
         let served = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
-            Bearer {
+            Lent::Bearer(Bearer {
                 token: "sk-ant-oat01-borrowed".to_owned(),
                 expires_at: None,
-            }
+            })
             .send(stream)
             .await
             .unwrap();
         });
 
         let stream = UnixStream::connect(&socket).await.unwrap();
-        let received = Bearer::receive(stream).await.unwrap();
+        let received = Lent::receive(stream).await.unwrap();
 
         served.await.unwrap();
-        assert_eq!(received.token, "sk-ant-oat01-borrowed");
+        assert_eq!(
+            received,
+            Lent::Bearer(Bearer {
+                token: "sk-ant-oat01-borrowed".to_owned(),
+                expires_at: None,
+            })
+        );
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "cyber-sandbox-courier"
-description = "Lends the host's Claude Code credential to the copy running inside a cyber-sandbox VM"
+description = "Lends the host's agent credential to the copy running inside a cyber-sandbox VM"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

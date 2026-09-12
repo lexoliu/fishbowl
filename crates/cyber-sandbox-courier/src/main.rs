@@ -1,16 +1,18 @@
-//! Runs Claude Code inside a session on a credential the host keeps lending it.
+//! Runs an agent inside a session on a credential the host keeps lending it.
 //!
 //! Claude Code will take its credential from a file when told the host manages one, but
 //! it does not take the file's word for it: the file names a process, and the credential
 //! counts only while that process is alive and was started when the file says it was.
-//! This program is that process. It fetches the current access token over a socket the
-//! host forwarded in, writes the file, starts Claude Code, and keeps fetching for as long
-//! as Claude Code runs — so a token that is renewed on the host reaches the session
-//! without the session ever holding what renews it.
+//! This program is that process. Devin's file is simpler — it reads whatever it is handed
+//! — so for Devin the loan is only that the file is written before the agent starts and
+//! removed after it exits. Either way this program is the one that fetches the credential
+//! over a socket the host forwarded in, writes it where the agent reads it, starts the
+//! agent, and keeps fetching for as long as the agent runs — so a credential renewed on
+//! the host reaches the session without the session ever holding what renews it.
 //!
-//! It also means the loan ends when the session's Claude Code does. The file goes on the
-//! way out, and even if it did not, nothing else could read it: the process it names is
-//! gone, and the next process to be given that pid started at a different moment.
+//! It also means the loan ends when the session's agent does. The file goes on the way
+//! out, and even a Claude Code file left behind could not be picked up: the process it
+//! names is gone, and the next process to be given that pid started at a different moment.
 
 use std::{
     os::unix::process::ExitStatusExt as _,
@@ -19,9 +21,9 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context as _, Result};
-use clap::Parser;
-use cyber_sandbox_creds::{Bearer, Credentials};
+use anyhow::{Context as _, Result, bail};
+use clap::{Parser, ValueEnum};
+use cyber_sandbox_creds::{Credentials, Lent};
 use jiff::Timestamp;
 use tokio::{
     net::UnixStream,
@@ -29,7 +31,7 @@ use tokio::{
     signal::unix::{SignalKind, signal},
 };
 
-/// How often the token is fetched again.
+/// How often the credential is fetched again.
 ///
 /// The host renews its login well before the token it lends stops being accepted, and
 /// this only has to notice within that margin. Fetching is a round trip over a socket
@@ -44,32 +46,87 @@ const CLAUDE: &str = "claude";
 const CONTINUE: &str = "--continue";
 
 /// Where Claude Code keeps its conversations, under the account's home directory.
-const TRANSCRIPTS: &str = ".claude/projects";
+const CLAUDE_TRANSCRIPTS: &str = ".claude/projects";
 
-/// Extension of one conversation's transcript.
-const TRANSCRIPT: &str = "jsonl";
+/// Extension of one Claude Code conversation's transcript.
+const CLAUDE_TRANSCRIPT: &str = "jsonl";
+
+/// The program Devin is started as, under the account's home directory.
+///
+/// The researcher's own install rather than a system path, so that Devin's self-updater —
+/// which writes beside the binary — may do its job inside a resumed session.
+const DEVIN: &str = ".local/bin/devin";
+
+/// Where Devin keeps its conversations, under the account's home directory.
+const DEVIN_TRANSCRIPTS: &str = ".local/share/devin/cli/transcripts";
+
+/// Extension of one Devin conversation's transcript.
+const DEVIN_TRANSCRIPT: &str = "json";
+
+/// The rules file the briefing is written into, under the account's home directory.
+///
+/// Devin has no flag for adding to its system prompt the way Claude Code has
+/// `--append-system-prompt`; a rule in the account's own `.windsurf/rules` is read at the
+/// start of every session, which is the same channel for telling it about a key it has
+/// been given. It is the home directory's rules and not the work directory's on purpose:
+/// the work directory is where samples are detonated, and a rule a sample can rewrite is
+/// a prompt a sample can write.
+const BRIEFING_RULE: &str = ".windsurf/rules/cyber-sandbox.md";
+
+/// The agent the courier is holding a credential for.
+///
+/// Which one decides what the lent bytes become, where a continuing conversation is
+/// found, and how the agent is started — the loan, the renewal and the take-back are the
+/// same for both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum Agent {
+    /// Claude Code, which reads the courier's pid-bound credentials file.
+    Claude,
+    /// Devin, which reads the credentials file it is handed verbatim.
+    Devin,
+}
+
+impl Agent {
+    /// The agent's name, for messages.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Devin => "devin",
+        }
+    }
+}
 
 #[derive(Debug, Parser)]
-#[command(about = "Runs Claude Code on a credential lent by the cyber-sandbox host")]
+#[command(about = "Runs an agent on a credential lent by the cyber-sandbox host")]
 struct Courier {
-    /// Socket the host publishes the current access token on.
+    /// Agent to run.
+    #[arg(long)]
+    agent: Agent,
+    /// Socket the host publishes the current credential on.
     #[arg(long)]
     socket: PathBuf,
-    /// File to write the credential into, where Claude Code reads it.
+    /// File to write the credential into, where the agent reads it.
     #[arg(long)]
     credentials: PathBuf,
-    /// Directory Claude Code is started in.
+    /// Directory the agent is started in.
     #[arg(long)]
     directory: PathBuf,
     /// Carry on the conversation this session was last left in, if it has one.
     ///
     /// The host knows the researcher asked to come back to the session; only the session
-    /// knows whether there is anything here to come back to. Asking Claude Code to
-    /// continue a conversation that was never had is an error rather than a fresh start,
-    /// so the two halves of the question are answered where each of them is known.
+    /// knows whether there is anything here to come back to. Asking the agent to continue
+    /// a conversation that was never had is an error rather than a fresh start, so the
+    /// two halves of the question are answered where each of them is known.
     #[arg(long)]
     continue_conversation: bool,
-    /// Arguments Claude Code is started with.
+    /// What the agent is told about the keys it has been given, written where it reads
+    /// its rules.
+    ///
+    /// Only Devin takes a briefing this way; Claude is briefed through its own
+    /// `--append-system-prompt`, passed through after `--` like anything else of its.
+    #[arg(long)]
+    briefing: Option<String>,
+    /// Arguments the agent is started with.
     #[arg(last = true)]
     arguments: Vec<String>,
 }
@@ -96,26 +153,40 @@ async fn main() -> std::process::ExitCode {
     }
 }
 
-/// Lends the credential, runs Claude Code on it, and takes it back.
+/// Lends the credential, runs the agent on it, and takes it back.
 async fn run(courier: &Courier) -> Result<ExitStatus> {
-    let stamp = Stamp::of_self().context("reading this process's own identity")?;
-    // The first fetch is not allowed to fail: starting Claude Code without a credential
+    if courier.agent != Agent::Devin && courier.briefing.is_some() {
+        bail!(
+            "--briefing goes where {} reads its rules, and {} has none; brief claude \
+             through its own --append-system-prompt",
+            Agent::Devin.name(),
+            courier.agent.name()
+        );
+    }
+    // The first fetch is not allowed to fail: starting the agent without a credential
     // would land the researcher in a login prompt inside a machine that cannot complete
     // one, which is a worse answer than saying why here.
-    lend(courier, stamp)
+    lend(courier)
         .await
         .context("fetching the host's credential")?;
+    place_briefing(courier.briefing.as_deref()).await?;
 
-    let claude = spawn(courier).context("starting claude in the session")?;
-    let status = supervise(courier, stamp, claude).await;
+    let agent = spawn(courier).context("starting the agent in the session")?;
+    let status = supervise(courier, agent).await;
 
-    // Whatever happened above, and before anything is reported: the loan is over.
-    Credentials::remove(&courier.credentials)
+    // Whatever happened above, and before anything is reported: the loan is over, and so
+    // is what the agent was told — a briefing left behind would describe a key the next
+    // run may not have been given.
+    cyber_sandbox_creds::remove(&courier.credentials)
         .await
         .context("taking back the credential")?;
-    // And so is the way it arrived. sshd unlinks the forwarded socket when it tears the
-    // channel down, but a connection cut rather than closed leaves the name behind, and
-    // nothing else will ever ask for this one: it was named for this run alone.
+    place_briefing(None)
+        .await
+        .context("taking back the briefing")?;
+    // And so is the way the credential arrived. sshd unlinks the forwarded socket when it
+    // tears the channel down, but a connection cut rather than closed leaves the name
+    // behind, and nothing else will ever ask for this one: it was named for this run
+    // alone.
     remove_if_present(&courier.socket)
         .await
         .context("taking back the socket the credential arrived on")?;
@@ -131,14 +202,15 @@ async fn remove_if_present(path: &Path) -> Result<()> {
     }
 }
 
-/// Runs Claude Code to completion, renewing the loan underneath it.
+/// Runs the agent to completion, renewing the loan underneath it.
 ///
-/// Claude Code is a child rather than a replacement for this process because the file has
-/// to keep being rewritten while it runs, and because the process the file names has to
-/// still be there for it to be read. That makes the terminal's interrupt this process's
-/// problem too — it reaches the whole foreground process group — so it is received and
-/// deliberately ignored here, leaving Claude Code to shut itself down.
-async fn supervise(courier: &Courier, stamp: Stamp, mut claude: Child) -> Result<ExitStatus> {
+/// The agent is a child rather than a replacement for this process because the
+/// credential file has to keep being rewritten while it runs — and for Claude Code,
+/// because the process the file names has to still be there for it to be read. That makes
+/// the terminal's interrupt this process's problem too — it reaches the whole foreground
+/// process group — so it is received and deliberately ignored here, leaving the agent to
+/// shut itself down.
+async fn supervise(courier: &Courier, mut agent: Child) -> Result<ExitStatus> {
     let mut interrupt = signal(SignalKind::interrupt()).context("listening for an interrupt")?;
     let mut terminate = signal(SignalKind::terminate()).context("listening for a termination")?;
     let mut hangup = signal(SignalKind::hangup()).context("listening for a hangup")?;
@@ -147,11 +219,11 @@ async fn supervise(courier: &Courier, stamp: Stamp, mut claude: Child) -> Result
 
     loop {
         tokio::select! {
-            status = claude.wait() => return status.context("waiting for claude to finish"),
+            status = agent.wait() => return status.context("waiting for the agent to finish"),
             _ = renewal.tick() => {
                 // A failed renewal is not fatal: the credential already written stays
                 // valid until it expires, and the next attempt is five minutes away.
-                if let Err(error) = lend(courier, stamp).await {
+                if let Err(error) = lend(courier).await {
                     tracing::warn!("could not renew the host's credential: {error:#}");
                 }
             }
@@ -162,63 +234,143 @@ async fn supervise(courier: &Courier, stamp: Stamp, mut claude: Child) -> Result
     }
 }
 
-/// Fetches the current token and writes it where Claude Code reads it.
-async fn lend(courier: &Courier, stamp: Stamp) -> Result<()> {
-    let bearer = fetch(&courier.socket).await?;
-    let credentials = Credentials {
-        env: cyber_sandbox_creds::bearer_environment(&bearer.token),
-        expires_at: bearer.expires_at,
-        pid: stamp.pid,
-        proc_start: stamp.started,
-    };
-    credentials
-        .write_to(&courier.credentials)
-        .await
-        .with_context(|| format!("writing {}", courier.credentials.display()))
+/// Fetches the current credential and writes it where the agent reads it.
+///
+/// The variant the host sends is the agent's whole answer: a bearer becomes the
+/// pid-vouched file Claude Code checks, and a document is installed as Devin's
+/// credentials file unchanged. A variant meant for the other agent is refused, because a
+/// credential written in the wrong shape is a login that fails for no stated reason.
+async fn lend(courier: &Courier) -> Result<()> {
+    if let Some(parent) = courier.credentials.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    match (courier.agent, fetch(&courier.socket).await?) {
+        (Agent::Claude, Lent::Bearer(bearer)) => {
+            let stamp = Stamp::of_self().context("reading this process's own identity")?;
+            let credentials = Credentials {
+                env: cyber_sandbox_creds::bearer_environment(&bearer.token),
+                expires_at: bearer.expires_at,
+                pid: stamp.pid,
+                proc_start: stamp.started,
+            };
+            credentials
+                .write_to(&courier.credentials)
+                .await
+                .with_context(|| format!("writing {}", courier.credentials.display()))
+        }
+        (Agent::Devin, Lent::Document(contents)) => {
+            cyber_sandbox_creds::install(&courier.credentials, contents.as_bytes())
+                .await
+                .with_context(|| format!("writing {}", courier.credentials.display()))
+        }
+        (agent, lent) => {
+            let lent = match lent {
+                Lent::Bearer(_) => "a token",
+                Lent::Document(_) => "a document",
+            };
+            bail!(
+                "the host lent {lent}, which is not a credential {} can read",
+                agent.name()
+            )
+        }
+    }
 }
 
-/// Asks the host for the token it is currently prepared to lend.
-async fn fetch(socket: &Path) -> Result<Bearer> {
+/// Asks the host for the credential it is currently prepared to lend.
+async fn fetch(socket: &Path) -> Result<Lent> {
     let stream = UnixStream::connect(socket)
         .await
         .with_context(|| format!("connecting to {}", socket.display()))?;
-    Bearer::receive(stream)
+    Lent::receive(stream)
         .await
         .context("reading the credential the host sent")
 }
 
-/// How Claude Code is started for a session.
-fn spawn(courier: &Courier) -> Result<Child> {
-    Command::new(CLAUDE)
-        .args(arguments(courier)?)
-        .current_dir(&courier.directory)
-        .envs(cyber_sandbox_creds::launch_environment(
-            &courier.credentials,
-        ))
-        .spawn()
-        .with_context(|| format!("running {CLAUDE} in {}", courier.directory.display()))
+/// Writes the briefing where Devin reads its rules, or takes it back when there is none.
+///
+/// The file is this run's rather than the session's: which keys the agent was given is
+/// decided by the host's environment at attach time, so a rule written by one run and
+/// left behind would tell the next run about a key it does not have.
+async fn place_briefing(briefing: Option<&str>) -> Result<()> {
+    let home = std::env::var_os("HOME").context("this account has no HOME to write in")?;
+    let path = PathBuf::from(home).join(BRIEFING_RULE);
+    match briefing {
+        Some(briefing) => {
+            if let Some(parent) = path.parent() {
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .with_context(|| format!("creating {}", parent.display()))?;
+            }
+            tokio::fs::write(
+                &path,
+                format!("---\ntrigger: always_on\n---\n\n{briefing}\n"),
+            )
+            .await
+            .with_context(|| format!("writing {}", path.display()))
+        }
+        None => remove_if_present(&path).await,
+    }
 }
 
-/// The arguments Claude Code is given, once the session has answered what only it knows.
+/// How the agent is started for a session.
+fn spawn(courier: &Courier) -> Result<Child> {
+    let mut command = match courier.agent {
+        Agent::Claude => {
+            let mut command = Command::new(CLAUDE);
+            command.envs(cyber_sandbox_creds::launch_environment(
+                &courier.credentials,
+            ));
+            command
+        }
+        Agent::Devin => {
+            let home = std::env::var_os("HOME").context("this account has no HOME to run from")?;
+            Command::new(PathBuf::from(home).join(DEVIN))
+        }
+    };
+    command
+        .args(arguments(courier)?)
+        .current_dir(&courier.directory);
+    command.spawn().with_context(|| {
+        format!(
+            "running {} in {}",
+            courier.agent.name(),
+            courier.directory.display()
+        )
+    })
+}
+
+/// The arguments the agent is given, once the session has answered what only it knows.
 ///
 /// # Errors
 /// Fails when the account has no home directory to look in.
 fn arguments(courier: &Courier) -> Result<Vec<String>> {
     let mut arguments = courier.arguments.clone();
-    if courier.continue_conversation && has_conversation()? {
+    if courier.continue_conversation && has_conversation(courier.agent)? {
         arguments.insert(0, CONTINUE.to_owned());
     }
     Ok(arguments)
 }
 
-/// Whether this session holds a conversation Claude Code could carry on.
+/// Whether this session holds a conversation the agent could carry on.
 ///
-/// Claude Code is only ever started in one directory here, so the question is whether it
+/// Each agent is only ever started in one directory here, so the question is whether it
 /// has written any transcript at all — which is read from its own files, rather than by
 /// reproducing the way it names the directory one belongs to.
-fn has_conversation() -> Result<bool> {
-    let home = std::env::var_os("HOME").context("this account has no HOME to look in")?;
-    let mut pending = vec![PathBuf::from(home).join(TRANSCRIPTS)];
+fn has_conversation(agent: Agent) -> Result<bool> {
+    let home =
+        PathBuf::from(std::env::var_os("HOME").context("this account has no HOME to look in")?);
+    match agent {
+        Agent::Claude => has_transcript(home.join(CLAUDE_TRANSCRIPTS), CLAUDE_TRANSCRIPT, true),
+        Agent::Devin => has_transcript(home.join(DEVIN_TRANSCRIPTS), DEVIN_TRANSCRIPT, false),
+    }
+}
+
+/// Whether `directory` holds a transcript file with `extension`, recursing when the
+/// agent files its own deeper.
+fn has_transcript(directory: PathBuf, extension: &str, recurse: bool) -> Result<bool> {
+    let mut pending = vec![directory];
     while let Some(directory) = pending.pop() {
         let entries = match std::fs::read_dir(&directory) {
             Ok(entries) => entries,
@@ -231,9 +383,9 @@ fn has_conversation() -> Result<bool> {
         for entry in entries {
             let entry = entry.with_context(|| format!("reading {}", directory.display()))?;
             let path = entry.path();
-            if path.is_dir() {
+            if recurse && path.is_dir() {
                 pending.push(path);
-            } else if path.extension().is_some_and(|kind| kind == TRANSCRIPT) {
+            } else if path.extension().is_some_and(|kind| kind == extension) {
                 return Ok(true);
             }
         }
@@ -269,8 +421,8 @@ impl Stamp {
     }
 }
 
-/// What a shell would report for `status`, so that a Claude Code killed by a signal is
-/// not mistaken for one that merely returned nothing.
+/// What a shell would report for `status`, so that an agent killed by a signal is not
+/// mistaken for one that merely returned nothing.
 fn exit_code(status: ExitStatus) -> i32 {
     status
         .code()

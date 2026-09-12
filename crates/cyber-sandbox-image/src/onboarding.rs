@@ -1,13 +1,14 @@
-//! The Claude Code state a session starts with, so that opening one is not a wizard.
+//! The agent state a session starts with, so that opening one is not a wizard.
 //!
 //! Claude Code asks a first-run question about the theme, another about trusting the
-//! directory it was started in, and a third about running without approvals. Every one of
-//! them is a question about a machine cyber-sandbox made seconds earlier, on behalf of a
+//! directory it was started in, and a third about running without approvals; Devin asks
+//! to finish its shell setup and to trust the same directory. Every one of them is a
+//! question about a machine cyber-sandbox made seconds earlier, on behalf of a
 //! researcher who asked for exactly that machine — and a session that begins by asking
 //! them is one nobody can hand to an agent and walk away from, which is the whole point of
 //! running it in a sandbox.
 //!
-//! The answers are therefore written into the image, in the two files Claude Code itself
+//! The answers are therefore written into the image, in the files each agent itself
 //! keeps them in. Nothing here decides anything about permissions inside the session that
 //! the sandbox does not already decide by being a sandbox.
 
@@ -55,6 +56,41 @@ pub struct Settings {
     model: &'static str,
     skip_dangerous_mode_permission_prompt: bool,
     status_line: StatusLine,
+}
+
+/// `~/.config/devin/config.json`: the researcher account's Devin configuration.
+///
+/// `org_id` is deliberately absent: which organisation Devin belongs to is told to it by
+/// the credentials it is lent, not written into an image ahead of them.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct DevinConfiguration {
+    version: u8,
+    shell: DevinShell,
+    theme_mode: &'static str,
+    agent: DevinAgent,
+}
+
+/// `shell`: whether Devin's own shell setup has been completed.
+#[derive(Debug, Serialize)]
+struct DevinShell {
+    setup_complete: bool,
+}
+
+/// `agent`: which of the account's models Devin opens on.
+#[derive(Debug, Serialize)]
+struct DevinAgent {
+    model: &'static str,
+}
+
+/// `~/.local/share/devin/cli/trusted_workspaces.json`: the directories Devin does not ask
+/// about trusting.
+///
+/// A session's agent is only ever started in the work directory, so that is the only
+/// path the file names — anything else trusted here would be trusted for samples too.
+#[derive(Debug, Serialize)]
+pub struct DevinWorkspaces {
+    trusted_paths: Vec<String>,
 }
 
 /// `statusLine`: the command Claude Code runs to draw its status line.
@@ -113,5 +149,43 @@ impl Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl DevinConfiguration {
+    /// The configuration a session's researcher account is given.
+    ///
+    /// The model is a family alias rather than a dated member, so the session opens on
+    /// the family's strongest the way the researcher's own installation would — the same
+    /// reasoning as Claude Code's `opus`.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            version: 1,
+            shell: DevinShell {
+                setup_complete: true,
+            },
+            theme_mode: THEME,
+            agent: DevinAgent { model: "swe-2" },
+        }
+    }
+}
+
+impl Default for DevinConfiguration {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DevinWorkspaces {
+    /// The trusted-workspaces file a session's researcher account is given.
+    ///
+    /// The working directory is trusted because the researcher asked for the session it
+    /// belongs to, and it is the only directory an agent is ever started in here.
+    #[must_use]
+    pub fn for_layout(layout: &SandboxLayout) -> Self {
+        Self {
+            trusted_paths: vec![layout.work_dir.display().to_string()],
+        }
     }
 }

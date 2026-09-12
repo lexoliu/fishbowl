@@ -102,6 +102,12 @@ impl BuildContext {
             &rendered.claude_settings,
         )
         .await?;
+        write_file(&directory.join("devin-config.json"), &rendered.devin_config).await?;
+        write_file(
+            &directory.join("devin-trusted-workspaces.json"),
+            &rendered.devin_trusted_workspaces,
+        )
+        .await?;
         write_file(&directory.join("sudoers"), &rendered.sudoers).await?;
         write_file(&directory.join("detonate.sh"), &rendered.detonate).await?;
         write_file(&directory.join("statusline.sh"), rendered.statusline).await?;
@@ -263,4 +269,47 @@ async fn copy_tree(from: &Path, to: &Path) -> Result<(), StageError> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every file the Dockerfile names in a `COPY` exists in the staged context.
+    ///
+    /// A rendered file that is never staged — or a COPY of a name nothing renders —
+    /// fails inside `container build` with a message about the build context rather than
+    /// the file, so the agreement is checked here where both sides of it are visible.
+    #[tokio::test]
+    async fn every_copy_source_the_dockerfile_names_is_staged() {
+        let parent = tempfile::TempDir::new().unwrap();
+        let context = BuildContext::stage(
+            parent.path(),
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .as_path(),
+            "docker.io/kalilinux/kali-rolling:latest",
+            Arch::Arm64,
+            ToolProfile::Core,
+            &SandboxLayout::default(),
+        )
+        .await
+        .unwrap();
+
+        let dockerfile = std::fs::read_to_string(context.directory().join("Dockerfile")).unwrap();
+        for line in dockerfile.lines() {
+            let Some(source) = line.strip_prefix("COPY ") else {
+                continue;
+            };
+            // `COPY --from=<stage>` names a build stage's filesystem, not the context.
+            let source = source.split_whitespace().next().unwrap();
+            if source.starts_with("--") {
+                continue;
+            }
+            assert!(
+                context.directory().join(source).exists(),
+                "the Dockerfile copies {source}, and nothing staged it"
+            );
+        }
+    }
 }

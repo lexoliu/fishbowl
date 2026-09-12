@@ -4,7 +4,7 @@ use cyber_sandbox_runtime::Arch;
 use crate::{
     guest::GUEST_CRATES,
     layout::SandboxLayout,
-    onboarding::{Configuration, Settings},
+    onboarding::{Configuration, DevinConfiguration, DevinWorkspaces, Settings},
     openssh::OpenSshBuild,
     profile::ToolProfile,
 };
@@ -145,6 +145,11 @@ pub struct RenderedImage {
     pub claude_config: String,
     /// Contents of the researcher account's `~/.claude/settings.json`.
     pub claude_settings: String,
+    /// Contents of the researcher account's `~/.config/devin/config.json`.
+    pub devin_config: String,
+    /// Contents of the researcher account's
+    /// `~/.local/share/devin/cli/trusted_workspaces.json`.
+    pub devin_trusted_workspaces: String,
     /// Contents of the sudoers drop-in.
     pub sudoers: String,
     /// Contents of the program Claude Code's status line runs.
@@ -237,6 +242,11 @@ impl RenderedImage {
             .expect("the agent configuration is representable as JSON");
         let claude_settings = serde_json::to_string_pretty(&Settings::new())
             .expect("the agent settings are representable as JSON");
+        let devin_config = serde_json::to_string_pretty(&DevinConfiguration::new())
+            .expect("the agent configuration is representable as JSON");
+        let devin_trusted_workspaces =
+            serde_json::to_string_pretty(&DevinWorkspaces::for_layout(layout))
+                .expect("the agent's trusted workspaces are representable as JSON");
         Ok(Self {
             dockerfile,
             entrypoint,
@@ -244,6 +254,8 @@ impl RenderedImage {
             sshd_config,
             claude_config,
             claude_settings,
+            devin_config,
+            devin_trusted_workspaces,
             sudoers,
             detonate,
             statusline: include_str!("../templates/statusline.sh"),
@@ -419,6 +431,59 @@ mod tests {
         assert!(
             settings["theme"].is_string(),
             "an unanswered theme is a picker the session opens on instead of the work"
+        );
+    }
+
+    #[test]
+    fn devins_first_run_questions_are_answered_and_its_binary_is_installed() {
+        let layout = SandboxLayout::default();
+        let rendered = rendered();
+
+        let configuration: serde_json::Value =
+            serde_json::from_str(&rendered.devin_config).unwrap();
+        assert_eq!(configuration["shell"]["setup_complete"], true);
+        assert_eq!(
+            configuration["agent"]["model"], "swe-2",
+            "a family alias, so the session follows the family's strongest rather than a \
+             member pinned the week the image was written"
+        );
+        assert!(
+            configuration.get("org_id").is_none(),
+            "which organisation Devin belongs to is told by the lent credentials, not \
+             written ahead of them"
+        );
+
+        let workspaces: serde_json::Value =
+            serde_json::from_str(&rendered.devin_trusted_workspaces).unwrap();
+        assert_eq!(
+            workspaces["trusted_paths"],
+            serde_json::json!([layout.work_dir.display().to_string()]),
+            "the only directory an agent is ever started in is the only one trusted"
+        );
+
+        let dockerfile = &rendered.dockerfile;
+        let user_at = dockerfile.find("USER ").unwrap();
+        let install_at = dockerfile.find("cli.devin.ai/install.sh").unwrap();
+        let root_at = dockerfile.find("USER root").unwrap();
+        assert!(
+            user_at < install_at
+                && install_at < root_at
+                && dockerfile[user_at..install_at].contains("researcher"),
+            "the installer must run as the researcher so the self-updater can write \
+             beside the binary it lands: {dockerfile}"
+        );
+        assert!(
+            dockerfile.contains("test -x /home/researcher/.local/bin/devin"),
+            "a build that fails here fails loudly; a session that finds no binary fails \
+             silently after a minute's boot"
+        );
+        assert!(
+            dockerfile
+                .contains("COPY devin-config.json /home/researcher/.config/devin/config.json")
+        );
+        assert!(dockerfile.contains("COPY devin-trusted-workspaces.json"));
+        assert!(
+            dockerfile.contains("/home/researcher/.local/share/devin/cli/trusted_workspaces.json")
         );
     }
 

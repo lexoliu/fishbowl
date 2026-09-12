@@ -16,9 +16,11 @@ gone a week untouched or the host runs short of disk.
 **A sample never reaches a credential.** Codex leaves its login on the host entirely.
 Claude Code runs inside the session and is lent an access token that expires in hours,
 written to a file only the researcher account can open and taken away the moment the agent
-exits; the refresh token behind it never crosses. Samples are detonated under a third
-account no credential is ever written for, so a sample that reads every file it can reach
-still finds none.
+exits; the refresh token behind it never crosses. Devin's login is a credentials file with
+no short-lived part to lend instead, so the file itself crosses on the same terms —
+present only while the agent runs. Samples are detonated under a third account no
+credential is ever written for, so a sample that reads every file it can reach still finds
+none.
 
 **No packet leaves unaudited.** Traffic is redirected by uid to an in-guest gateway that
 terminates TLS with its own authority and records every DNS question, connection, TLS
@@ -34,6 +36,7 @@ dies, the redirect target stops listening and egress fails closed.
 cyber-sandbox shell  --samples ~/samples  # a new session, with samples mounted read-only
 cyber-sandbox claude --samples ~/samples  # the same, with Claude Code driving it
 cyber-sandbox codex  --samples ~/samples  # or Codex
+cyber-sandbox devin  --samples ~/samples  # or Devin
 cyber-sandbox audit c0ffee                # follow every packet that session sends
 cyber-sandbox shell --resume              # pick a session to come back to
 cyber-sandbox claude --resume c0ffee      # or name it
@@ -77,8 +80,8 @@ opens says which it was.
 The value travels in ssh's own environment forwarding, by name, so it never appears on a
 command line, and the session's sshd accepts that one name and no other. Samples never see
 it: they run as a separate account, and `sudo` resets the environment on the way there.
-Claude Code and Codex are told the key exists and what it is for when they start, so you
-do not have to.
+Claude Code, Codex and Devin are told the key exists and what it is for when they start,
+so you do not have to.
 
 `--arch amd64` runs an x86_64 root filesystem under Rosetta, for samples that are not
 arm64. It is settled when the session is created, so an `amd64` sample gets its own
@@ -86,11 +89,12 @@ session rather than a flag on an existing one.
 
 ## Agents
 
-`cyber-sandbox claude` and `cyber-sandbox codex` open a session and hand it to an agent
-running with approvals off: the session is the sandbox, so an agent that stops to ask for
-permission to read a file is one you have to babysit for no gain.
+`cyber-sandbox claude`, `cyber-sandbox codex` and `cyber-sandbox devin` open a session
+and hand it to an agent running with approvals off: the session is the sandbox, so an
+agent that stops to ask for permission to read a file is one you have to babysit for no
+gain.
 
-Both keep your subscription. Neither is given anything that could be used to log in as
+All three keep your subscription. None is given anything that could be used to log in as
 you after the run.
 
 ### Claude Code
@@ -134,6 +138,22 @@ resolves the directory it works in against the host and then asks the session to
 there, so the path has to exist on both sides — inside the session the same path is a
 symlink to `/work`. Nothing is mounted through it, and a session left holding a path the
 host does not have is one where Codex quietly runs the command on your laptop instead.
+
+### Devin
+
+Devin runs inside the session for the same reason Claude Code does: it is one program,
+with no tool side to leave on the host. What it is lent is different. Devin's login is
+`~/.local/share/devin/credentials.toml` — a session key plus the endpoints it
+authenticates to, with no expiring token to lend in its place — so the file itself
+crosses the socket, is written where Devin reads it, and is taken off the disk when Devin
+exits.
+
+The key does not expire on its own the way an OAuth token does, so the loan's bound is
+the run rather than a clock. The host re-reads the file every time the courier asks, so
+logging in again on the host reaches a running session; the socket stops existing when
+the run does, so nothing can fetch it afterwards; and the file in the session is readable
+only by the researcher account for as long as it exists at all. Your own `devin` is
+untouched — its credentials file is read, never written.
 
 ## Layout
 
