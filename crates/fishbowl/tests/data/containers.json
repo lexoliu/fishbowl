@@ -1,0 +1,51 @@
+[
+  {
+    "configuration": {
+      "image": {
+        "reference": "localhost/fishbowl:amd64"
+      },
+      "platform": {
+        "architecture": "amd64",
+        "os": "linux"
+      },
+      "resources": {
+        "cpus": 2,
+        "memoryInBytes": 4294967296
+      },
+      "rosetta": true
+    },
+    "id": "c0ffee",
+    "status": {
+      "networks": [
+        {
+          "hostname": "c0ffee",
+          "ipv4Address": "192.168.65.29/24",
+          "ipv4Gateway": "192.168.65.1",
+          "network": "default"
+        }
+      ],
+      "state": "running"
+    }
+  },
+  {
+    "configuration": {
+      "image": {
+        "reference": "localhost/fishbowl:latest"
+      },
+      "platform": {
+        "architecture": "arm64",
+        "os": "linux"
+      },
+      "resources": {
+        "cpus": 5,
+        "memoryInBytes": 12884901888
+      },
+      "rosetta": false
+    },
+    "id": "dec0de",
+    "status": {
+      "networks": [],
+      "state": "stopped"
+    }
+  }
+]

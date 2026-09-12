@@ -1,0 +1,22 @@
+[package]
+name = "fishbowl-courier"
+description = "Lends the host's agent credential to the copy running inside a fishbowl VM"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+fishbowl-creds.workspace = true
+jiff.workspace = true
+procfs.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

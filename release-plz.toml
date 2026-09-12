@@ -6,7 +6,7 @@ git_release_enable = true
 pr_labels = ["release"]
 
 [[package]]
-name = "cyber-sandbox-gateway"
+name = "fishbowl-gateway"
 # The gateway only builds for Linux, so it is published from the release job rather than
 # verified on the macOS host that publishes everything else.
 publish_no_verify = true
