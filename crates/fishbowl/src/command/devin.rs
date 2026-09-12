@@ -68,7 +68,7 @@ pub async fn run(host: &Host, arguments: &cli::Devin) -> Result<()> {
         credentials: host.layout().devin_credentials(),
         directory: record.work_dir.clone(),
         resumed: arguments.attach.resume.is_some(),
-        briefing: handoff.briefing(),
+        briefing: Some(handoff.briefing(host.layout())),
         channel: Briefing::Rule,
         autonomous: AUTONOMOUS,
     };

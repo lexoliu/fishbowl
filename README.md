@@ -22,7 +22,8 @@ present only while the agent runs. Samples are detonated under a third account n
 credential is ever written for, so a sample that reads every file it can reach still finds
 none.
 
-**No packet leaves unaudited.** Traffic is redirected by uid to an in-guest gateway that
+**No packet leaves unaudited.** Apart from the detonation account's — whose traffic is
+cut entirely — traffic is redirected by uid to an in-guest gateway that
 terminates TLS with its own authority and records every DNS question, connection, TLS
 handshake and HTTP exchange as JSONL. Anything the gateway cannot audit — QUIC above all
 — is dropped by the packet filter rather than passed. The policy is installed by the init
@@ -81,6 +82,12 @@ the credential is written into. `sudo` resets the environment on the way through
 token an agent holds does not travel into a sample the agent starts. The working directory
 is shared between the two accounts, because that is where the sample and what it leaves
 behind both belong.
+
+A detonated sample has no network. The machine is virtualized rather than
+network-isolated, so traffic a sample sent under the researcher's uid would reach the
+real internet — the packet filter therefore drops everything the detonation account
+emits, loopback aside. A C2 that only ever receives a connection attempt that goes
+nowhere is exactly what running the thing was for.
 
 This is a second uid inside a machine that is itself the boundary. If an agent running
 unattended is talked into running a sample under its own account, the separation is gone

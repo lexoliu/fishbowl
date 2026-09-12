@@ -8,15 +8,23 @@
 //! What crosses is the variable, in the researcher account's environment and nowhere
 //! else. Samples run as another account, and `sudo` resets the environment on the way
 //! there, so a key handed to the session is not thereby handed to the sample.
+//!
+//! Whatever is handed over, the agent is told what kind of machine it is running on: a
+//! disposable one it can act on freely, where samples are executed through `detonate`
+//! and get no network. What it is not told is how its egress is observed — the audit is
+//! the host's to read, not the agent's to think about.
 
 use askama::Template;
 use fishbowl_image::SandboxLayout;
 
-/// What the agent is told about a key it has been given.
+/// What the agent is told about the machine it is running on.
 #[derive(Debug, Template)]
-#[template(path = "malwarebazaar.txt", escape = "none")]
-struct MalwareBazaarBriefing<'a> {
-    variable: &'a str,
+#[template(path = "briefing.txt", escape = "none")]
+struct SessionBriefing<'a> {
+    /// Directory work belongs in.
+    work_dir: &'a str,
+    /// The `MalwareBazaar` key's variable, when the host has it set.
+    malwarebazaar: Option<&'a str>,
 }
 
 /// The researcher's keys that this host holds, by the variables they are found in.
@@ -47,21 +55,23 @@ impl Handoff {
         self.malwarebazaar.iter().cloned().collect()
     }
 
-    /// What the agent is told about the keys it has been given, or nothing when it has
-    /// been given none.
+    /// What the agent is told about the machine it is running on, including any keys it
+    /// has been given.
     ///
     /// # Panics
     /// Panics if the briefing template cannot be rendered, which the compiler already
-    /// rules out for a template with one string field.
+    /// rules out for a template of plain string fields.
     #[must_use]
-    pub fn briefing(&self) -> Option<String> {
-        self.malwarebazaar.as_deref().map(|variable| {
-            MalwareBazaarBriefing { variable }
-                .render()
-                .expect("a one-field briefing renders")
-                .trim_end()
-                .to_owned()
-        })
+    pub fn briefing(&self, layout: &SandboxLayout) -> String {
+        let work_dir = layout.work_dir.display().to_string();
+        SessionBriefing {
+            work_dir: &work_dir,
+            malwarebazaar: self.malwarebazaar.as_deref(),
+        }
+        .render()
+        .expect("a briefing of plain strings renders")
+        .trim_end()
+        .to_owned()
     }
 
     /// One line for the session summary.
@@ -79,20 +89,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_agent_is_told_it_is_disposable_and_how_samples_are_run() {
+        let layout = SandboxLayout::default();
+        let briefing = Handoff::from_lookup(&layout, |_| false).briefing(&layout);
+        assert!(briefing.contains("disposable"));
+        assert!(briefing.contains("`detonate`"));
+        assert!(briefing.contains("no network"), "{briefing}");
+        assert!(
+            !briefing.contains("Auth-Key"),
+            "a key that was not handed over is not described"
+        );
+    }
+
+    #[test]
     fn a_key_the_host_has_is_sent_and_explained_and_one_it_lacks_is_neither() {
         let layout = SandboxLayout::default();
         let with = Handoff::from_lookup(&layout, |_| true);
         assert_eq!(with.sent(), vec!["MALWAREBAZAAR_API_KEY".to_owned()]);
-        let briefing = with.briefing().unwrap();
+        let briefing = with.briefing(&layout);
         assert!(briefing.contains("MALWAREBAZAAR_API_KEY"));
         assert!(briefing.contains("Auth-Key"));
-        assert!(
-            briefing.contains("`detonate`"),
-            "an agent told about a way to fetch samples is told how they are run here"
-        );
 
         let without = Handoff::from_lookup(&layout, |_| false);
         assert!(without.sent().is_empty());
-        assert_eq!(without.briefing(), None);
     }
 }
