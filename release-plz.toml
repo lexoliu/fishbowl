@@ -6,7 +6,13 @@ git_release_enable = true
 pr_labels = ["release"]
 
 [[package]]
+name = "fishbowl-courier"
+# Linux-only (procfs), same reason as the gateway.
+publish_no_verify = true
+
+[[package]]
 name = "fishbowl-gateway"
-# The gateway only builds for Linux, so it is published from the release job rather than
-# verified on the macOS host that publishes everything else.
+# The gateway only builds for Linux, so the release job's verify build — which runs
+# where the host tools do, on macOS — cannot check it; it is published unverified and
+# proven by the Linux-target CI instead.
 publish_no_verify = true
