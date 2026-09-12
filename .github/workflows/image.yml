@@ -31,7 +31,7 @@ jobs:
     name: image (${{ matrix.arch }})
     # Only the CLI crate's release carries a version tag the installed binary can name;
     # other crates' releases change nothing the binary asks for.
-    if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'cyber-sandbox-v')
+    if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'fishbowl-v')
     runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
@@ -52,7 +52,7 @@ jobs:
       - name: Stage the build context
         id: stage
         run: |
-          cargo build --release -p cyber-sandbox-image --bin stage-context
+          cargo build --release -p fishbowl-image --bin stage-context
           TAG=$(target/release/stage-context \
             --workspace . --arch ${{ matrix.arch }} --out "$RUNNER_TEMP/context")
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -63,11 +63,11 @@ jobs:
         env:
           RELEASE: ${{ github.event_name == 'release' }}
         run: |
-          IMAGE=ghcr.io/lexoliu/cyber-sandbox
+          IMAGE=ghcr.io/lexoliu/fishbowl
           TAGS="--tag $IMAGE:${{ steps.stage.outputs.tag }}"
           if [ "$RELEASE" = "true" ]; then
             VERSION=$(cargo metadata --no-deps --format-version 1 \
-              | jq -r '.packages[] | select(.name == "cyber-sandbox") | .version')
+              | jq -r '.packages[] | select(.name == "fishbowl") | .version')
             TAGS="$TAGS --tag $IMAGE:${{ matrix.arch }}-$VERSION"
           fi
           echo "tags=$TAGS" >> "$GITHUB_OUTPUT"

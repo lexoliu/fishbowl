@@ -1,0 +1,23 @@
+[package]
+name = "fishbowl-audit"
+description = "Audit record schema and JSONL transport shared by the fishbowl host CLI and the in-VM gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+jiff = { version = "0.2", features = ["serde"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, optional = true }
+
+[features]
+default = ["io"]
+io = ["dep:tokio"]
+
+[lints]
+workspace = true

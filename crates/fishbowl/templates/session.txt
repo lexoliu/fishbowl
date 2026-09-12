@@ -1,0 +1,15 @@
+{% if created %}session {{ id }} is ready{% else %}session {{ id }} is back{% endif %}.
+
+  image      {{ image }} ({{ arch }})
+  samples    {{ samples }}
+  work       {{ work_dir }}
+  keys       {{ keys }}
+
+Every packet it sends is audited or refused. Follow them from another terminal:
+
+  fishbowl audit {{ id }}
+
+Come back to this session later with:
+
+  fishbowl {{ command }} --resume {{ id }}
+

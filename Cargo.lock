@@ -517,144 +517,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cyber-sandbox"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "askama",
- "clap",
- "cyber-sandbox-agents",
- "cyber-sandbox-audit",
- "cyber-sandbox-creds",
- "cyber-sandbox-image",
- "cyber-sandbox-runtime",
- "getrandom 0.4.3",
- "inquire",
- "jiff",
- "nix",
- "serde",
- "serde_json",
- "ssh-key",
- "tempfile",
- "thiserror",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "cyber-sandbox-agents"
-version = "0.1.0"
-dependencies = [
- "cyber-sandbox-creds",
- "jiff",
- "security-framework",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror",
- "tokio",
- "toml_edit",
- "unicode-normalization",
-]
-
-[[package]]
-name = "cyber-sandbox-audit"
-version = "0.1.0"
-dependencies = [
- "jiff",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "cyber-sandbox-courier"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "cyber-sandbox-creds",
- "jiff",
- "procfs",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "cyber-sandbox-creds"
-version = "0.1.0"
-dependencies = [
- "jiff",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "cyber-sandbox-gateway"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "cyber-sandbox-audit",
- "etherparse",
- "hickory-proto",
- "http",
- "http-body-util",
- "hyper",
- "hyper-util",
- "jiff",
- "netlink-packet-core",
- "netlink-packet-netfilter",
- "netlink-sys",
- "nix",
- "rcgen",
- "rustls",
- "sha2",
- "thiserror",
- "tokio",
- "tokio-rustls",
- "tracing",
- "tracing-subscriber",
- "webpki-roots",
-]
-
-[[package]]
-name = "cyber-sandbox-image"
-version = "0.1.0"
-dependencies = [
- "askama",
- "clap",
- "cyber-sandbox-runtime",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror",
- "tokio",
- "toml",
-]
-
-[[package]]
-name = "cyber-sandbox-runtime"
-version = "0.1.0"
-dependencies = [
- "jiff",
- "serde",
- "serde_json",
- "sysinfo",
- "thiserror",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "data-encoding"
 version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -900,6 +762,144 @@ name = "find-msvc-tools"
 version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d45db016d36b838f563236e9193d0ee6ce38f3f68b6c94e914b4929c96bbb890"
+
+[[package]]
+name = "fishbowl"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "askama",
+ "clap",
+ "fishbowl-agents",
+ "fishbowl-audit",
+ "fishbowl-creds",
+ "fishbowl-image",
+ "fishbowl-runtime",
+ "getrandom 0.4.3",
+ "inquire",
+ "jiff",
+ "nix",
+ "serde",
+ "serde_json",
+ "ssh-key",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "fishbowl-agents"
+version = "0.1.0"
+dependencies = [
+ "fishbowl-creds",
+ "jiff",
+ "security-framework",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "toml_edit",
+ "unicode-normalization",
+]
+
+[[package]]
+name = "fishbowl-audit"
+version = "0.1.0"
+dependencies = [
+ "jiff",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "fishbowl-courier"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "fishbowl-creds",
+ "jiff",
+ "procfs",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "fishbowl-creds"
+version = "0.1.0"
+dependencies = [
+ "jiff",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "fishbowl-gateway"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "etherparse",
+ "fishbowl-audit",
+ "hickory-proto",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "jiff",
+ "netlink-packet-core",
+ "netlink-packet-netfilter",
+ "netlink-sys",
+ "nix",
+ "rcgen",
+ "rustls",
+ "sha2",
+ "thiserror",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "tracing-subscriber",
+ "webpki-roots",
+]
+
+[[package]]
+name = "fishbowl-image"
+version = "0.1.0"
+dependencies = [
+ "askama",
+ "clap",
+ "fishbowl-runtime",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "toml",
+]
+
+[[package]]
+name = "fishbowl-runtime"
+version = "0.1.0"
+dependencies = [
+ "jiff",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "flate2"

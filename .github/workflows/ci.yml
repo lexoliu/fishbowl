@@ -38,6 +38,6 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - name: Clippy
-        run: cargo clippy -p cyber-sandbox-gateway -p cyber-sandbox-courier --all-targets -- -D warnings
+        run: cargo clippy -p fishbowl-gateway -p fishbowl-courier --all-targets -- -D warnings
       - name: Tests
-        run: cargo test -p cyber-sandbox-gateway -p cyber-sandbox-courier
+        run: cargo test -p fishbowl-gateway -p fishbowl-courier

@@ -1,0 +1,28 @@
+[package]
+name = "fishbowl-agents"
+description = "Reads the host's agent logins for a fishbowl session to borrow, and registers a session with Codex."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+fishbowl-creds.workspace = true
+jiff.workspace = true
+security-framework.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+unicode-normalization.workspace = true
+toml_edit.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[lints]
+workspace = true

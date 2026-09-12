@@ -1,4 +1,4 @@
-# cyber-sandbox
+# fishbowl
 
 Isolated, fully audited security-research environments on macOS.
 
@@ -33,20 +33,20 @@ dies, the redirect target stops listening and egress fails closed.
 ## Use
 
 ```sh
-cyber-sandbox shell  --samples ~/samples  # a new session, with samples mounted read-only
-cyber-sandbox claude --samples ~/samples  # the same, with Claude Code driving it
-cyber-sandbox codex  --samples ~/samples  # or Codex
-cyber-sandbox devin  --samples ~/samples  # or Devin
-cyber-sandbox audit c0ffee                # follow every packet that session sends
-cyber-sandbox shell --resume              # pick a session to come back to
-cyber-sandbox claude --resume c0ffee      # or name it
+fishbowl shell  --samples ~/samples  # a new session, with samples mounted read-only
+fishbowl claude --samples ~/samples  # the same, with Claude Code driving it
+fishbowl codex  --samples ~/samples  # or Codex
+fishbowl devin  --samples ~/samples  # or Devin
+fishbowl audit c0ffee                # follow every packet that session sends
+fishbowl shell --resume              # pick a session to come back to
+fishbowl claude --resume c0ffee      # or name it
 ```
 
 The first run pulls the Kali image — with the gateway compiled into it — from
-`ghcr.io/lexoliu/cyber-sandbox`, where CI builds it per architecture for every merge and
+`ghcr.io/lexoliu/fishbowl`, where CI builds it per architecture for every merge and
 tags it with the tool's version for every release. Nothing is compiled on your machine.
 The image a checkout would build is named for the digest of its sources, so an image CI
-already pushed under that name is pulled rather than rebuilt; upgrading cyber-sandbox
+already pushed under that name is pulled rather than rebuilt; upgrading fishbowl
 replaces the image on the next new session and an unchanged one never does. A session
 keeps the image it was created from, and images no session refers to are removed on the
 way in to the next one.
@@ -96,7 +96,7 @@ session rather than a flag on an existing one.
 
 ## Agents
 
-`cyber-sandbox claude`, `cyber-sandbox codex` and `cyber-sandbox devin` open a session
+`fishbowl claude`, `fishbowl codex` and `fishbowl devin` open a session
 and hand it to an agent running with approvals off: the session is the sandbox, so an
 agent that stops to ask for permission to read a file is one you have to babysit for no
 gain.
@@ -107,7 +107,7 @@ you after the run.
 ### Claude Code
 
 Claude Code runs inside the session, because that is where the sample is. What stays on
-the host is the login: cyber-sandbox reads the access token out of your Keychain, serves
+the host is the login: fishbowl reads the access token out of your Keychain, serves
 it over a unix socket, and forwards that socket into the session over ssh. Inside, a
 courier fetches the token, writes it where Claude Code looks for a host-managed
 credential, starts Claude Code, and fetches again every five minutes so a token renewed on
@@ -132,7 +132,7 @@ Three things in your configuration are borrowed for the length of a run and hand
 exactly as they were: the session becomes an entry in `~/.codex/environments.toml`, it is
 preselected there so Codex opens on it without a menu, and the directory it works in is
 marked trusted in `~/.codex/config.toml` so opening it does not begin with a question
-about a directory cyber-sandbox made seconds earlier.
+about a directory fishbowl made seconds earlier.
 
 Codex's hooks are switched off for the run, with a command-line override rather than a
 change to your settings. Hooks are the one part of Codex that executes on the host, and the
@@ -140,7 +140,7 @@ ones a stock install carries belong to plugins that drive your browser; Codex re
 trust in them per directory, so left on they would stop every session's first prompt with a
 review of hooks that have nothing to do with the session.
 
-That directory is `~/.cyber-sandbox/work/<id>`, and on the host it stays empty. Codex
+That directory is `~/.fishbowl/work/<id>`, and on the host it stays empty. Codex
 resolves the directory it works in against the host and then asks the session to execute
 there, so the path has to exist on both sides — inside the session the same path is a
 symlink to `/work`. Nothing is mounted through it, and a session left holding a path the
@@ -166,26 +166,26 @@ untouched — its credentials file is read, never written.
 
 | Crate | Role |
 |---|---|
-| `cyber-sandbox` | The CLI |
-| `cyber-sandbox-runtime` | Typed driver for the `container` CLI |
-| `cyber-sandbox-image` | Renders the Dockerfile, entrypoint and egress policy; stages the build context |
-| `cyber-sandbox-gateway` | The in-guest auditing proxy (Linux only) |
-| `cyber-sandbox-courier` | Holds an agent's borrowed credential in-guest (Linux only) |
-| `cyber-sandbox-creds` | The borrowed credential's wire and on-disk formats |
-| `cyber-sandbox-audit` | Audit record schema and JSONL reader/writer |
-| `cyber-sandbox-agents` | Reads the host's logins and registers a session with Codex |
+| `fishbowl` | The CLI |
+| `fishbowl-runtime` | Typed driver for the `container` CLI |
+| `fishbowl-image` | Renders the Dockerfile, entrypoint and egress policy; stages the build context |
+| `fishbowl-gateway` | The in-guest auditing proxy (Linux only) |
+| `fishbowl-courier` | Holds an agent's borrowed credential in-guest (Linux only) |
+| `fishbowl-creds` | The borrowed credential's wire and on-disk formats |
+| `fishbowl-audit` | Audit record schema and JSONL reader/writer |
+| `fishbowl-agents` | Reads the host's logins and registers a session with Codex |
 
 ## Install
 
 ```sh
-CYBER_SANDBOX_SIGNING_IDENTITY="Apple Development: You (TEAMID)" scripts/install.sh
+FISHBOWL_SIGNING_IDENTITY="Apple Development: You (TEAMID)" scripts/install.sh
 ```
 
 The script builds the release binary, signs it with a certificate of yours, and installs it
 into `~/.local/bin`. `security find-identity -v -p codesigning` lists the certificates you
 have; an Apple Development certificate is enough.
 
-The signature is what stops macOS asking for your password. `cyber-sandbox claude` reads
+The signature is what stops macOS asking for your password. `fishbowl claude` reads
 your Claude Code login from the Keychain, and the Keychain only lets an application do that
 silently once you have answered **Always Allow** for it — an answer it remembers by the
 application's signed identity. A binary straight out of `cargo build` carries only the
