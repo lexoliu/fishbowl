@@ -30,6 +30,16 @@ process before anything else runs, and `CAP_NET_ADMIN` is removed from the bound
 afterwards, so code inside the sandbox cannot change it even as root. If the gateway
 dies, the redirect target stops listening and egress fails closed.
 
+## Install
+
+```sh
+cargo install fishbowl
+```
+
+fishbowl needs macOS with Apple's [`container`](https://github.com/apple/container) tool
+installed and its service started (`container system start`). Everything else — the Kali
+image, the auditing gateway — is pulled, not built.
+
 ## Use
 
 ```sh
