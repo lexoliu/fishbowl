@@ -785,7 +785,9 @@ mod tests {
     async fn a_tree_that_is_not_there_is_zero() {
         let directory = tempfile::tempdir().unwrap();
         assert_eq!(
-            directory_size(&directory.path().join("gone")).await.unwrap(),
+            directory_size(&directory.path().join("gone"))
+                .await
+                .unwrap(),
             0,
             "a container the runtime already forgot holds nothing"
         );

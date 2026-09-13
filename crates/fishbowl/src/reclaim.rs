@@ -36,9 +36,7 @@
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
-use fishbowl_runtime::{
-    ContainerState, ImageInfo, ImageReference, RunState, Sandbox, Workload,
-};
+use fishbowl_runtime::{ContainerState, ImageInfo, ImageReference, RunState, Sandbox, Workload};
 use jiff::Timestamp;
 
 use crate::{cli, host::Host, keys::SandboxKey, lease::Lease, session::SessionRecord};

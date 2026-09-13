@@ -112,7 +112,9 @@ impl ImageDigest {
     /// The bare digest hex, without the `algorithm:` prefix.
     #[must_use]
     pub fn hex(&self) -> &str {
-        self.0.split_once(':').map_or(self.0.as_str(), |(_, hex)| hex)
+        self.0
+            .split_once(':')
+            .map_or(self.0.as_str(), |(_, hex)| hex)
     }
 }
 

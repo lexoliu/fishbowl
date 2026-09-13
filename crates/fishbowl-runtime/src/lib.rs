@@ -16,8 +16,8 @@ pub use apple::{AppleContainer, ExecOutput, ExecStream, ImageBuild};
 pub use budget::{Build, Committed, HostBudget, Reservation, Sandbox, Workload};
 pub use error::RuntimeError;
 pub use inspect::{
-    ContainerState, ImageDescription, ImageDigest, ImageInfo, NetworkStatus, Resources,
-    RunState, SystemStatus,
+    ContainerState, ImageDescription, ImageDigest, ImageInfo, NetworkStatus, Resources, RunState,
+    SystemStatus,
 };
 pub use spec::{
     Arch, Capability, ContainerName, ContainerSpec, Cpus, ImageReference, Memory, Mount,
