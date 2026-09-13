@@ -9,7 +9,8 @@ boundary.
 
 You never start, stop, list or delete a machine. You open a session; the machine under it
 is created when you need one, resumed when you come back to it, and reclaimed once it has
-gone a week untouched or the host runs short of disk.
+gone a week untouched, the host runs short of disk, or the store the sessions live in
+outgrows its allowance.
 
 ## What it guarantees
 

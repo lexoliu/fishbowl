@@ -1,5 +1,6 @@
 use std::{
     ffi::OsStr,
+    os::unix::fs::MetadataExt as _,
     path::{Path, PathBuf},
     process::Stdio,
 };
@@ -14,7 +15,7 @@ use tracing::debug;
 use crate::{
     budget::{Build, Reservation, Workload},
     error::RuntimeError,
-    inspect::{ContainerState, RunState, SystemStatus},
+    inspect::{ContainerState, ImageDigest, ImageInfo, RunState, SystemStatus},
     spec::{Arch, ContainerName, ContainerSpec, ImageReference},
 };
 
@@ -106,12 +107,22 @@ pub struct ImageBuild {
 #[derive(Debug, Deserialize)]
 struct ImageListing {
     configuration: ImageListingConfiguration,
+    /// One entry per platform the image's index offers; absent on runtimes that do not
+    /// report them, in which case the image simply attributes no snapshots.
+    #[serde(default)]
+    variants: Vec<ImageVariant>,
 }
 
 /// The part of an image's configuration that names it.
 #[derive(Debug, Deserialize)]
 struct ImageListingConfiguration {
     name: ImageReference,
+}
+
+/// The part of an image's variant that names its unpacked snapshot on disk.
+#[derive(Debug, Deserialize)]
+struct ImageVariant {
+    digest: ImageDigest,
 }
 
 impl AppleContainer {
@@ -359,12 +370,12 @@ impl AppleContainer {
         }
     }
 
-    /// Every image the runtime holds, by the reference it was built or pulled under.
+    /// Every image the runtime holds, with the digests naming its snapshots on disk.
     ///
     /// # Errors
     /// Fails when the runtime cannot be invoked, when its output cannot be parsed, or when
     /// it reports an image under a name that is not a reference.
-    pub async fn image_list(&self) -> Result<Vec<ImageReference>, RuntimeError> {
+    pub async fn image_list(&self) -> Result<Vec<ImageInfo>, RuntimeError> {
         let args = ["image", "list", "--format", "json"];
         let stdout = self.output(&args).await?;
         let images: Vec<ImageListing> =
@@ -374,8 +385,56 @@ impl AppleContainer {
             })?;
         Ok(images
             .into_iter()
-            .map(|image| image.configuration.name)
+            .map(|image| ImageInfo {
+                name: image.configuration.name,
+                variants: image
+                    .variants
+                    .into_iter()
+                    .map(|variant| variant.digest)
+                    .collect(),
+            })
             .collect())
+    }
+
+    /// Bytes of the runtime's store held by `containers` and `images`, measured on disk.
+    ///
+    /// `container system df` totals the store without attributing it, so the measure is
+    /// a walk of the state tree instead: each named container's directory under
+    /// `containers/`, and each image's per-variant unpacked snapshot under `snapshots/`,
+    /// where the directory is named for the bare hex of the variant's manifest digest.
+    /// Sizes are counted in allocated blocks the way `du` counts them, so a sparse disk
+    /// image costs what it has written rather than the capacity it declares. The blob
+    /// store the images were pulled into is shared and unattributable — an image's
+    /// compressed layers may be another's too — so it is not part of the count.
+    ///
+    /// Anything named that is not there counts as nothing rather than as an error: a
+    /// container the runtime already forgot and a variant it never unpacked both hold
+    /// no space.
+    ///
+    /// # Errors
+    /// Fails when the runtime cannot say where its state lives, or the state tree cannot
+    /// be read.
+    pub async fn usage(
+        &self,
+        containers: &[ContainerName],
+        images: &[&ImageInfo],
+    ) -> Result<u64, RuntimeError> {
+        let root = PathBuf::from(&self.system_status().await?.app_root);
+        let mut total = 0;
+        for name in containers {
+            total += directory_size(&root.join("containers").join(name.as_str())).await?;
+        }
+        // Two references can name one image — a release tag and the digest tag of the
+        // same build — and both share its snapshots; deduplicating by digest counts
+        // each unpacked tree once.
+        let snapshots: std::collections::BTreeSet<&str> = images
+            .iter()
+            .flat_map(|image| image.variants.iter().map(ImageDigest::hex))
+            .collect();
+        for digest in snapshots {
+            total += directory_size(&root.join("snapshots").join(digest)).await?;
+        }
+        Ok(total)
     }
 
     /// Pulls an image the registry holds.
@@ -622,4 +681,115 @@ impl AppleContainer {
 
 fn to_owned<S: AsRef<str>>(args: &[S]) -> Vec<String> {
     args.iter().map(|arg| arg.as_ref().to_owned()).collect()
+}
+
+/// The size of `path`'s whole tree in allocated blocks, counted the way `du` counts
+/// them.
+///
+/// A missing tree is zero bytes rather than an error, because the runtime deletes
+/// underneath a measure in flight: a name that was worth counting is no less worth
+/// zero once it is gone. Any other failure to read is real and reported.
+async fn directory_size(path: &Path) -> Result<u64, RuntimeError> {
+    let metadata = match tokio::fs::symlink_metadata(path).await {
+        Ok(metadata) => metadata,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(source) => return Err(unreadable(path, &source)),
+    };
+    let mut size = metadata.blocks() * 512;
+    let mut pending = vec![path.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let mut entries = match tokio::fs::read_dir(&directory).await {
+            Ok(entries) => entries,
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(source) => return Err(unreadable(&directory, &source)),
+        };
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|source| unreadable(&directory, &source))?
+        {
+            let metadata = entry
+                .metadata()
+                .await
+                .map_err(|source| unreadable(&entry.path(), &source))?;
+            size += metadata.blocks() * 512;
+            if metadata.is_dir() {
+                pending.push(entry.path());
+            }
+        }
+    }
+    Ok(size)
+}
+
+/// Why a part of the runtime's state tree could not be measured.
+fn unreadable(path: &Path, source: &std::io::Error) -> RuntimeError {
+    RuntimeError::Probe {
+        what: "the runtime's disk usage",
+        reason: format!("cannot read {}: {source}", path.display()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const IMAGES: &str = include_str!("../tests/data/images.json");
+
+    #[test]
+    fn image_listings_carry_the_digests_their_snapshots_are_named_for() {
+        let images: Vec<ImageListing> = serde_json::from_str(IMAGES).unwrap();
+        assert_eq!(images.len(), 2);
+        let fishbowl = &images[0];
+        assert_eq!(
+            fishbowl.configuration.name.as_str(),
+            "ghcr.io/lexoliu/fishbowl:arm64-da126c12ee64"
+        );
+        assert_eq!(
+            fishbowl.variants[0].digest.hex(),
+            "f0d5fb2fed6f3dc53ab3c0ab89c9d52777c16383150dd02f1d17947808be460c",
+            "the store names a variant's unpacked snapshot after this hex"
+        );
+        assert_eq!(
+            images[1]
+                .variants
+                .iter()
+                .map(|variant| variant.digest.hex())
+                .collect::<Vec<_>>(),
+            [
+                "79ff19e9084a00eece421b2523fb93e22d730e2c0e525905de047e848e56d95f",
+                "e7a1a92a5bfeee40966aea60f0796b0e7917cc35591542701834f03a68fa3d18",
+            ],
+            "every platform variant gets its own snapshot, so every digest is kept"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_sparse_disk_image_costs_what_it_has_written() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::File::create(directory.path().join("rootfs.ext4"))
+            .unwrap()
+            .set_len(8 << 30)
+            .unwrap();
+        assert!(
+            directory_size(directory.path()).await.unwrap() < 16 << 20,
+            "an 8 GiB file nothing was written to holds only its directory's own blocks"
+        );
+
+        std::fs::write(directory.path().join("initfs.ext4"), vec![0u8; 1 << 20]).unwrap();
+        let size = directory_size(directory.path()).await.unwrap();
+        assert!(size >= 1 << 20, "the written file's blocks are counted");
+        assert!(size < 2 << 20, "and nothing beyond them is invented");
+    }
+
+    #[tokio::test]
+    async fn a_tree_that_is_not_there_is_zero() {
+        let directory = tempfile::tempdir().unwrap();
+        assert_eq!(
+            directory_size(&directory.path().join("gone"))
+                .await
+                .unwrap(),
+            0,
+            "a container the runtime already forgot holds nothing"
+        );
+    }
 }

@@ -24,7 +24,8 @@ pub const DEFAULT_RESOLVER: &str = "1.1.1.1";
 /// There is nothing here for starting, stopping, listing or deleting a machine. A session
 /// is what a researcher asks for, and the virtual machine underneath it is this tool's
 /// business: it is created when a session begins, resumed when one is reopened, and
-/// reclaimed when it has gone stale or the host is short of room.
+/// reclaimed when it has gone stale, when the host is short of room, or when the
+/// runtime's store of them grows past its cap.
 #[derive(Debug, Parser)]
 #[command(name = "fishbowl", version, about, long_about = None)]
 pub struct Cli {
