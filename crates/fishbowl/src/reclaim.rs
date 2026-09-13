@@ -3,7 +3,7 @@
 //! Every session leaves a virtual machine, a disk image and an SSH identity behind, and
 //! there is no command for deleting one: a researcher who has finished with an
 //! environment closes the shell, and the tool is left to notice. So it is noticed here,
-//! on the way in to the next session, on two grounds.
+//! on the way in to every session — creation and resumption alike — on three grounds.
 //!
 //! The first is age. A session nobody has opened in [`IDLE_LIMIT`] is not being resumed;
 //! keeping it only makes the picker longer and the disk fuller.
@@ -13,24 +13,38 @@
 //! below the sandbox disk floor takes the least recently opened ones with it until the
 //! floor is clear again.
 //!
-//! A running machine is only worth protecting while somebody holds it. The session's
-//! lock answers that exactly: one that cannot be taken is a live owner, and one that
-//! can is a machine left running by an invocation that is already gone — so those are
-//! stopped on sight, and the ordinary rules then judge them like any other.
+//! The third is the store's own size. Free disk is a slow alarm: a session costs its
+//! machine's disk and each image costs an unpacked snapshot per platform variant —
+//! several gigabytes apiece — so a busy week of openings piles the store up long before
+//! the host's floor ever notices. Once what this tool owns passes [`USAGE_LIMIT`],
+//! sessions go in the same least-recently-opened order until it is under again. The
+//! measure is this tool's share alone: the base image, the builder and anything the
+//! researcher pulled for themselves are neither counted nor touched.
 //!
-//! Images go by a third rule, which is reference. An image is named for the sources it
-//! was built from, so every upgrade of the tool leaves the previous one behind; one that
-//! no session was created from and that the session being created will not use has
-//! nothing left to start, and at several gigabytes each they are the first thing to
-//! take away when the disk is short.
+//! A running machine is only worth protecting while somebody holds it. The session's
+//! lock answers that exactly: one that cannot be taken has a live owner — whatever its
+//! machine's state — and one that can is a machine left running by an invocation that
+//! is already gone, so those are stopped on sight and the ordinary rules then judge
+//! them like any other.
+//!
+//! Images go by a rule of their own, which is reference. An image is named for the
+//! sources it was built from, so every upgrade of the tool leaves the previous one
+//! behind; one that no session was created from and that the session being opened will
+//! not use has nothing left to start, and at several gigabytes each they are the first
+//! thing to take away when the disk is short.
 
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
-use fishbowl_runtime::{ContainerState, ImageReference, RunState, Sandbox, Workload};
+use fishbowl_runtime::{
+    ContainerState, ImageInfo, ImageReference, RunState, Sandbox, Workload,
+};
 use jiff::Timestamp;
 
 use crate::{cli, host::Host, keys::SandboxKey, lease::Lease, session::SessionRecord};
+
+/// Bytes in a gibibyte, for measuring the store and reporting it.
+const GIB: u64 = 1024 * 1024 * 1024;
 
 /// How long a session may go unopened before it is reclaimed.
 ///
@@ -38,13 +52,25 @@ use crate::{cli, host::Host, keys::SandboxKey, lease::Lease, session::SessionRec
 /// investigation was left in, short enough that abandoned ones do not accumulate.
 pub const IDLE_LIMIT: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
-/// Makes room for a session that is about to be created from `image`.
+/// How much of the runtime's store this tool may hold before sessions are taken away.
+///
+/// Sixty-four gibibytes: about a dozen sessions with their images, which is far more
+/// than a working set of environments ever is — the cap exists to catch accumulation
+/// that nothing else notices, not to bound how many sessions may be kept.
+const USAGE_LIMIT: u64 = 64 * GIB;
+
+/// Reclaims whatever a session's opening makes expendable, keeping `image` held.
+///
+/// Runs on every open rather than only on a create, so a host whose sessions are only
+/// ever resumed still collects. `image` is the image that session was — or is about to
+/// be — created from, and it is kept regardless of what else refers to it.
 ///
 /// # Errors
 /// Fails when the host's state, the runtime's containers or its images cannot be read,
-/// or when a machine or image that should go cannot be deleted. It does not fail for a
-/// host that is still short of disk afterwards: the budget refuses that, with a message
-/// about the host rather than about reclamation.
+/// when the store's usage cannot be measured, or when a machine or image that should
+/// go cannot be deleted. It does not fail for a host that is still short of disk
+/// afterwards: the budget refuses that, with a message about the host rather than
+/// about reclamation.
 pub async fn make_room(host: &Host, image: &ImageReference) -> Result<()> {
     let live = host
         .runtime()
@@ -53,28 +79,27 @@ pub async fn make_room(host: &Host, image: &ImageReference) -> Result<()> {
         .context("listing the runtime's containers")?;
     let now = Timestamp::now();
 
-    // A running machine whose lock can be taken has no owner: the flock going free is
-    // the proof the invocation holding it ended without stopping it. Those are stopped
-    // on sight and then judged by the rules like everything else; one whose lock is
-    // held is a session in use, and is not touched.
+    // A session whose lock cannot be taken has a live owner — held, whatever state its
+    // machine is in, and never a candidate. One whose lock is free but whose machine is
+    // still running was left up by an invocation already gone — the flock going free is
+    // the proof — so it is stopped on sight and then judged by the rules like any other.
     let mut candidates = host.sessions().await?;
     let mut held = Vec::new();
     for record in &candidates {
-        if !is_running(&live, record) {
+        if Lease::try_lock(host, &record.id)?.is_none() {
+            held.push(record.id.clone());
             continue;
         }
-        if Lease::try_lock(host, &record.id)?.is_some() {
+        if is_running(&live, record) {
             tracing::info!(session = %record.id, "stopping a session whose owner is gone");
             host.runtime()
                 .stop(&record.id.container_name()?)
                 .await
                 .with_context(|| format!("stopping the ownerless session {}", record.id))?;
-        } else {
-            held.push(record.id.clone());
         }
     }
 
-    // Least recently opened first: that is the order both rules reclaim in.
+    // Least recently opened first: that is the order every rule below reclaims in.
     candidates.retain(|record| !held.contains(&record.id));
     candidates.reverse();
 
@@ -96,17 +121,77 @@ pub async fn make_room(host: &Host, image: &ImageReference) -> Result<()> {
     // nobody anything to lose, and is the size of several sessions.
     prune_images(host, image).await?;
 
-    for record in recent {
-        if host.budget().await?.free_disk() >= <Sandbox as Workload>::DISK_FLOOR {
+    for (index, record) in recent.iter().enumerate() {
+        if !under_pressure(host, &recent[index..]).await? {
             return Ok(());
         }
         tracing::info!(
             session = %record.id,
-            "reclaiming the least recently opened session to make room on the disk"
+            "reclaiming the least recently opened session to make room"
         );
-        remove(host, &record).await?;
+        remove(host, record).await?;
+        // Whatever the removal stranded — above all an image only that session was
+        // still created from — is unreferenced now, and goes before the next oldest
+        // session does.
+        prune_images(host, image).await?;
     }
     Ok(())
+}
+
+/// Whether a session still has to go: the host's free disk is under the sandbox floor
+/// outright, or this tool's own share of the runtime's store is over [`USAGE_LIMIT`].
+///
+/// The floor is measured first because it is the cheaper probe; the walk the share
+/// costs is only paid when the floor alone does not already demand room.
+async fn under_pressure(host: &Host, remaining: &[SessionRecord]) -> Result<bool> {
+    if host.budget().await?.free_disk() < <Sandbox as Workload>::DISK_FLOOR {
+        return Ok(true);
+    }
+    let used = usage(host, remaining).await?;
+    if used > USAGE_LIMIT {
+        tracing::info!(
+            used_gib = used / GIB,
+            limit_gib = USAGE_LIMIT / GIB,
+            "the sandbox store is over its cap"
+        );
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// Bytes of the runtime's store this tool owns: the machine disk of every session on
+/// record, plus the unpacked snapshots of every sandbox image still held.
+///
+/// Only this tool's own repositories count — the base image, the builder's and
+/// anything the researcher pulled for themselves are not this tool's to measure or
+/// take away.
+async fn usage(host: &Host, sessions: &[SessionRecord]) -> Result<u64> {
+    let containers = sessions
+        .iter()
+        .map(|record| record.id.container_name())
+        .collect::<Result<Vec<_>>>()?;
+    let images = host
+        .runtime()
+        .image_list()
+        .await
+        .context("listing the runtime's images")?;
+    let held = images
+        .iter()
+        .filter(|image| is_sandbox_image(&image.name))
+        .collect::<Vec<_>>();
+    host.runtime()
+        .usage(&containers, &held)
+        .await
+        .context("measuring the sandbox share of the runtime's store")
+}
+
+/// Whether `image` is one of this tool's, by the repositories sessions are created
+/// from — the published one, and the local one images were built under before the
+/// registry existed.
+fn is_sandbox_image(image: &ImageReference) -> bool {
+    [cli::IMAGE_REPOSITORY, cli::LEGACY_IMAGE_REPOSITORY]
+        .iter()
+        .any(|repository| image.as_str().starts_with(&format!("{repository}:")))
 }
 
 /// Removes every sandbox image that no session was created from, other than `keep`.
@@ -122,31 +207,25 @@ async fn prune_images(host: &Host, keep: &ImageReference) -> Result<()> {
         .context("listing the runtime's images")?;
     let sessions = host.sessions().await?;
     for image in unreferenced(&held, &sessions, keep) {
-        tracing::info!(%image, "removing a sandbox image no session was created from");
+        tracing::info!(image = %image.name, "removing a sandbox image no session was created from");
         host.runtime()
-            .image_remove(image)
+            .image_remove(&image.name)
             .await
-            .with_context(|| format!("removing the image {image}"))?;
+            .with_context(|| format!("removing the image {}", image.name))?;
     }
     Ok(())
 }
 
 /// The sandbox images among `held` that neither `sessions` nor `keep` refer to.
 fn unreferenced<'a>(
-    held: &'a [ImageReference],
+    held: &'a [ImageInfo],
     sessions: &[SessionRecord],
     keep: &ImageReference,
-) -> Vec<&'a ImageReference> {
-    let repositories = [cli::IMAGE_REPOSITORY, cli::LEGACY_IMAGE_REPOSITORY]
-        .map(|repository| format!("{repository}:"));
+) -> Vec<&'a ImageInfo> {
     held.iter()
-        .filter(|image| {
-            repositories
-                .iter()
-                .any(|prefix| image.as_str().starts_with(prefix))
-        })
-        .filter(|image| *image != keep)
-        .filter(|image| !sessions.iter().any(|record| record.image == **image))
+        .filter(|image| is_sandbox_image(&image.name))
+        .filter(|image| image.name != *keep)
+        .filter(|image| !sessions.iter().any(|record| record.image == image.name))
         .collect()
 }
 
@@ -236,8 +315,11 @@ mod tests {
         }
     }
 
-    fn image(reference: &str) -> ImageReference {
-        ImageReference::new(reference).unwrap()
+    fn image(reference: &str) -> ImageInfo {
+        ImageInfo {
+            name: ImageReference::new(reference).unwrap(),
+            variants: Vec::new(),
+        }
     }
 
     #[test]
@@ -251,15 +333,12 @@ mod tests {
             image("localhost/fishbowl:arm64-0123456789ab"),
         ];
         let mut in_use = record("c0ffee", Timestamp::now());
-        in_use.image = image("ghcr.io/lexoliu/fishbowl:amd64-0123456789ab");
-        let keep = image("ghcr.io/lexoliu/fishbowl:arm64-fedcba987654");
+        in_use.image = ImageReference::new("ghcr.io/lexoliu/fishbowl:amd64-0123456789ab").unwrap();
+        let keep = ImageReference::new("ghcr.io/lexoliu/fishbowl:arm64-fedcba987654").unwrap();
 
         assert_eq!(
             unreferenced(&held, &[in_use], &keep),
-            vec![
-                &image("ghcr.io/lexoliu/fishbowl:arm64-0123456789ab"),
-                &image("localhost/fishbowl:arm64-0123456789ab"),
-            ],
+            vec![&held[2], &held[5]],
             "the base image and the builder are not this tool's; the image a session was \
              created from and the one about to be used are still wanted — and that holds \
              for images built before the registry existed"

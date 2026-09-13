@@ -92,6 +92,48 @@ pub struct ImageDescription {
     pub reference: ImageReference,
 }
 
+/// An image the runtime holds, and the digests its platform variants are filed under.
+///
+/// The store names each variant's unpacked snapshot after the bare hex of the variant's
+/// manifest digest, which is how an image's footprint on disk is attributed to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageInfo {
+    /// Reference the image was built or pulled under.
+    pub name: ImageReference,
+    /// Manifest digest of each platform variant the image's index lists.
+    pub variants: Vec<ImageDigest>,
+}
+
+/// Digest identifying one platform variant's manifest, such as `sha256:…`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ImageDigest(String);
+
+impl ImageDigest {
+    /// The bare digest hex, without the `algorithm:` prefix.
+    #[must_use]
+    pub fn hex(&self) -> &str {
+        self.0.split_once(':').map_or(self.0.as_str(), |(_, hex)| hex)
+    }
+}
+
+impl From<String> for ImageDigest {
+    fn from(digest: String) -> Self {
+        Self(digest)
+    }
+}
+
+impl From<&str> for ImageDigest {
+    fn from(digest: &str) -> Self {
+        Self(digest.to_owned())
+    }
+}
+
+impl std::fmt::Display for ImageDigest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
 /// Sizing a container was created with.
 ///
 /// A VM's allocation is fixed at creation, so this is how a container that already exists

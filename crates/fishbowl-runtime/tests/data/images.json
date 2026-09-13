@@ -1,0 +1,55 @@
+[
+    {
+        "configuration": {
+            "creationDate": "2026-09-11T20:00:00Z",
+            "descriptor": {
+                "digest": "sha256:a1080600a2447a2034e3c75ea2112f1b1b0bb9d72993e664e1130b46b16f7b97a0",
+                "mediaType": "application/vnd.oci.image.index.v1+json",
+                "size": 902
+            },
+            "name": "ghcr.io/lexoliu/fishbowl:arm64-da126c12ee64"
+        },
+        "id": "a1080600a2447a2034e3c75ea2112f1b1b0bb9d72993e664e1130b46b16f7b97a0",
+        "variants": [
+            {
+                "digest": "sha256:f0d5fb2fed6f3dc53ab3c0ab89c9d52777c16383150dd02f1d17947808be460c",
+                "platform": {
+                    "architecture": "arm64",
+                    "os": "linux"
+                },
+                "size": 1056789123
+            }
+        ]
+    },
+    {
+        "configuration": {
+            "creationDate": "2026-06-16T00:00:15Z",
+            "descriptor": {
+                "digest": "sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b",
+                "mediaType": "application/vnd.oci.image.index.v1+json",
+                "size": 9218
+            },
+            "name": "docker.io/library/alpine:latest"
+        },
+        "id": "28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b",
+        "variants": [
+            {
+                "digest": "sha256:79ff19e9084a00eece421b2523fb93e22d730e2c0e525905de047e848e56d95f",
+                "platform": {
+                    "architecture": "amd64",
+                    "os": "linux"
+                },
+                "size": 3848024
+            },
+            {
+                "digest": "sha256:e7a1a92a5bfeee40966aea60f0796b0e7917cc35591542701834f03a68fa3d18",
+                "platform": {
+                    "architecture": "arm64",
+                    "os": "linux",
+                    "variant": "v8"
+                },
+                "size": 4184689
+            }
+        ]
+    }
+]

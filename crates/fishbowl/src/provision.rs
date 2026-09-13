@@ -196,6 +196,10 @@ async fn resume(host: &Host, attach: &cli::Attach, mut record: SessionRecord) ->
     // The lock is taken before the machine's state is read: a predecessor's reaper may
     // still be stopping it, and only the lock makes the state observed underneath stable.
     let lease = Lease::acquire(host, &record.id).await?;
+    // Reclamation is owed on every opening, not only on a create: a host whose sessions
+    // are only ever resumed would otherwise never collect. The lease already taken keeps
+    // this session — and the image it was created from — out of the sweep it triggers.
+    reclaim::make_room(host, &record.image).await?;
     let name = record.id.container_name()?;
     let Some(container) = existing(host, &name).await? else {
         // The record describes a machine the runtime no longer holds, so there is nothing
