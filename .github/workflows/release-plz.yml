@@ -2,7 +2,8 @@ name: Release
 
 on:
   push:
-    branches: [dev]
+    # main: publish the release. dev: keep the release-plz bump PR fresh.
+    branches: [main, dev]
 
 permissions:
   contents: write
@@ -10,8 +11,9 @@ permissions:
   id-token: write
 
 jobs:
-  release-plz:
-    name: release-plz
+  release-pr:
+    name: release-pr
+    if: github.ref == 'refs/heads/dev'
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v5
@@ -26,6 +28,16 @@ jobs:
         # never reaches the image job that tags the version an installed binary pulls.
         env:
           GITHUB_TOKEN: ${{ secrets.GHCR_TOKEN }}
+
+  release:
+    name: release
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
       # Mint a short-lived crates.io token from the GitHub OIDC identity
       # instead of a stored CARGO_REGISTRY_TOKEN. Trusted publishing is
       # configured per crate on crates.io; a crate that has never been
@@ -40,4 +52,3 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GHCR_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
-
