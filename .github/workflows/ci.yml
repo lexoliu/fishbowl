@@ -25,8 +25,11 @@ jobs:
       # exist inside a session are checked by the job below, on the system they run on.
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
+      - uses: taiki-e/install-action@nextest
       - name: Tests
-        run: cargo test
+        run: cargo nextest run
+      - name: Doctests
+        run: cargo test --doc
 
   guest:
     name: guest (Linux)
@@ -39,5 +42,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Clippy
         run: cargo clippy -p fishbowl-gateway -p fishbowl-courier --all-targets -- -D warnings
+      - uses: taiki-e/install-action@nextest
       - name: Tests
-        run: cargo test -p fishbowl-gateway -p fishbowl-courier
+        run: cargo nextest run -p fishbowl-gateway -p fishbowl-courier
