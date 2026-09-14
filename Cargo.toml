@@ -21,7 +21,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/lexoliu/fishbowl"
@@ -29,13 +29,13 @@ authors = ["Lexo Liu <me@lexo.cool>"]
 rust-version = "1.90"
 
 [workspace.dependencies]
-fishbowl-runtime = { path = "crates/fishbowl-runtime", version = "0.1.1" }
-fishbowl-image = { path = "crates/fishbowl-image", version = "0.1.1" }
-fishbowl-audit = { path = "crates/fishbowl-audit", version = "0.1.1" }
-fishbowl-agents = { path = "crates/fishbowl-agents", version = "0.1.1" }
-fishbowl-courier = { path = "crates/fishbowl-courier", version = "0.1.1" }
-fishbowl-creds = { path = "crates/fishbowl-creds", version = "0.1.1" }
-fishbowl-gateway = { path = "crates/fishbowl-gateway", version = "0.1.1" }
+fishbowl-runtime = { path = "crates/fishbowl-runtime", version = "0.1.2" }
+fishbowl-image = { path = "crates/fishbowl-image", version = "0.1.2" }
+fishbowl-audit = { path = "crates/fishbowl-audit", version = "0.1.2" }
+fishbowl-agents = { path = "crates/fishbowl-agents", version = "0.1.2" }
+fishbowl-courier = { path = "crates/fishbowl-courier", version = "0.1.2" }
+fishbowl-creds = { path = "crates/fishbowl-creds", version = "0.1.2" }
+fishbowl-gateway = { path = "crates/fishbowl-gateway", version = "0.1.2" }
 
 anyhow = "1.0"
 askama = "0.16"
