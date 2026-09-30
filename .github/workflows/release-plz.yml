@@ -8,6 +8,9 @@ permissions:
   contents: write
   pull-requests: write
   id-token: write
+  # The fishbowl tag's downstream work — its dist build and its image tagging — is
+  # dispatched from below, since a GITHUB_TOKEN release fires no tag-triggered runs.
+  actions: write
 
 jobs:
   release-plz:
@@ -21,11 +24,8 @@ jobs:
       - uses: release-plz/action@v0.5
         with:
           command: release-pr
-        # A PAT rather than GITHUB_TOKEN: anything the token creates — release PRs,
-        # tags, releases — fires no further workflows, and a release that fires none
-        # never reaches the image job that tags the version an installed binary pulls.
         env:
-          GITHUB_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
       # Mint a short-lived crates.io token from the GitHub OIDC identity
       # instead of a stored CARGO_REGISTRY_TOKEN. Trusted publishing is
       # configured per crate on crates.io; a crate that has never been
@@ -35,9 +35,22 @@ jobs:
         id: crates-io-auth
         continue-on-error: true
       - uses: release-plz/action@v0.5
+        id: release
         with:
           command: release
         env:
-          GITHUB_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
           CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
-
+      # A tag this token pushes fires nothing downstream, so the work that used to
+      # hear it is dispatched explicitly: the dist build for the new release and the
+      # image tag a binary of that version pulls.
+      - name: Fan out the fishbowl release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASES: ${{ steps.release.outputs.releases }}
+        run: |
+          tag=$(jq -r '.[] | select(.package_name == "fishbowl") | .tag // ("fishbowl-v" + .version)' <<< "$RELEASES")
+          if [ -n "$tag" ]; then
+            gh workflow run fishbowl-v-release.yml -f "tag=$tag"
+            gh workflow run image.yml -f "ref=$tag"
+          fi
