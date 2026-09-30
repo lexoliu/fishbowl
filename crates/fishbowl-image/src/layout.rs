@@ -46,9 +46,14 @@ pub struct SandboxLayout {
     pub work_dir: PathBuf,
     /// Directory the host's per-attachment sockets and credential files live in.
     pub runtime_dir: PathBuf,
-    /// Host variable holding the researcher's `Auth-Key` for `MalwareBazaar`, handed to the
-    /// researcher account's environment in the session whenever the host has it set.
+    /// Name the session knows the researcher's `MalwareBazaar` `Auth-Key` by: the name
+    /// sshd accepts, the briefing reports and the tools inside the session read.
     pub malwarebazaar_key: String,
+    /// Host variables also accepted for the same key, in the order they are tried when
+    /// `malwarebazaar_key` itself is not set. `SendEnv` forwards a value only under the
+    /// name the client's environment holds it in, so a key found under one of these is
+    /// replanted in the client's environment as `malwarebazaar_key` before ssh runs.
+    pub malwarebazaar_key_aliases: Vec<String>,
 }
 
 impl Default for SandboxLayout {
@@ -93,6 +98,9 @@ impl Default for SandboxLayout {
             // The name OpenCTI's connector reads, and the product's own; there is no
             // convention beyond that, and one abuse.ch key serves all of their services.
             malwarebazaar_key: "MALWAREBAZAAR_API_KEY".to_owned(),
+            // abuse.ch's own documentation calls the same credential the `Auth-Key`, and
+            // setups that took that name literally keep it under this one.
+            malwarebazaar_key_aliases: vec!["MALWAREBAZAAR_AUTH_KEY".to_owned()],
         }
     }
 }

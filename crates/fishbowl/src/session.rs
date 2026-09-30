@@ -160,14 +160,15 @@ impl SessionRecord {
     ///
     /// `known_hosts` is passed for the same reason the address is: it is derived from the
     /// host's state directory, which the record does not know about. `send_environment`
-    /// is what the host has of the researcher's own keys right now, which no record can
-    /// know either.
+    /// and `environment_aliases` are what the host has of the researcher's own keys right
+    /// now, which no record can know either.
     #[must_use]
     pub fn endpoint(
         &self,
         address: Ipv4Addr,
         known_hosts: PathBuf,
         send_environment: Vec<String>,
+        environment_aliases: Vec<(std::ffi::OsString, std::ffi::OsString)>,
     ) -> SandboxEndpoint {
         SandboxEndpoint {
             id: self.id.to_string(),
@@ -178,6 +179,7 @@ impl SessionRecord {
             known_hosts,
             start_directory: self.work_dir.clone(),
             send_environment,
+            environment_aliases,
         }
     }
 }

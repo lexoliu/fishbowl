@@ -72,7 +72,12 @@ pub async fn run(host: &Host, arguments: &cli::Codex) -> Result<()> {
     banner(host, &session, &handoff, "codex")?;
 
     let known_hosts = host.known_hosts_of(&record.id).await?;
-    let endpoint = record.endpoint(session.address, known_hosts, handoff.sent());
+    let endpoint = record.endpoint(
+        session.address,
+        known_hosts,
+        handoff.sent(),
+        handoff.environment_aliases(),
+    );
     let agents = host.agents();
     let codex = agents.codex();
 
@@ -89,7 +94,12 @@ pub async fn run(host: &Host, arguments: &cli::Codex) -> Result<()> {
         .with_context(|| format!("adding session {} to codex's configuration", record.id))?;
     let previous = preselect(codex, &record.id).await?;
 
-    let status = supervise(&work_alias, Some(&instructions)).await;
+    let status = supervise(
+        &work_alias,
+        Some(&instructions),
+        &endpoint.client_environment(),
+    )
+    .await;
 
     // Before the run is reported, and whatever it did: an entry left behind is a dead
     // machine in the researcher's environment list, and a preselection left behind would
@@ -146,12 +156,20 @@ async fn restore(codex: &Codex, id: &SessionId, previous: Option<&str>) -> Resul
 /// interrupt this process's problem too: it reaches the whole foreground process group,
 /// so it is received and deliberately ignored here, leaving Codex to shut itself down
 /// while the parent survives long enough to clean up after it.
-async fn supervise(work_alias: &Path, instructions: Option<&str>) -> Result<ExitStatus> {
+///
+/// `environment` lands on Codex itself rather than on an ssh this process never spawns:
+/// the client Codex execs for the environment's transport inherits them, which is where
+/// `SendEnv` reads them from.
+async fn supervise(
+    work_alias: &Path,
+    instructions: Option<&str>,
+    environment: &[(std::ffi::OsString, std::ffi::OsString)],
+) -> Result<ExitStatus> {
     let mut interrupt = signal(SignalKind::interrupt()).context("listening for an interrupt")?;
     let mut terminate = signal(SignalKind::terminate()).context("listening for a termination")?;
     let mut hangup = signal(SignalKind::hangup()).context("listening for a hangup")?;
 
-    let mut codex = invocation(work_alias, instructions)
+    let mut codex = invocation(work_alias, instructions, environment)
         .spawn()
         .context("starting codex on the host")?;
 
@@ -167,13 +185,18 @@ async fn supervise(work_alias: &Path, instructions: Option<&str>) -> Result<Exit
 
 /// How Codex is started for a session, with `instructions` — a TOML string literal — as
 /// its developer instructions when there is something to tell it.
-fn invocation(work_alias: &Path, instructions: Option<&str>) -> Command {
+fn invocation(
+    work_alias: &Path,
+    instructions: Option<&str>,
+    environment: &[(std::ffi::OsString, std::ffi::OsString)],
+) -> Command {
     let mut command = Command::new("codex");
     command
         .arg("--cd")
         .arg(work_alias)
         .args(AUTONOMOUS)
-        .args(NO_HOOKS);
+        .args(NO_HOOKS)
+        .envs(environment.iter().map(|(k, v)| (k, v)));
     if let Some(instructions) = instructions {
         command
             .arg("--config")
@@ -208,7 +231,11 @@ mod tests {
 
     #[test]
     fn codex_is_started_where_the_session_can_follow_it() {
-        let command = invocation(Path::new("/home/researcher/.fishbowl/work/c0ffee"), None);
+        let command = invocation(
+            Path::new("/home/researcher/.fishbowl/work/c0ffee"),
+            None,
+            &[],
+        );
         let arguments: Vec<_> = command.as_std().get_args().collect();
         assert!(
             arguments
@@ -222,14 +249,14 @@ mod tests {
 
     #[test]
     fn a_briefing_becomes_codexs_developer_instructions_and_no_briefing_becomes_nothing() {
-        let silent = invocation(Path::new("/work-alias"), None);
+        let silent = invocation(Path::new("/work-alias"), None, &[]);
         assert!(
             !silent
                 .as_std()
                 .get_args()
                 .any(|argument| argument.to_string_lossy().starts_with(INSTRUCTIONS))
         );
-        let briefed = invocation(Path::new("/work-alias"), Some("\"the key is set\""));
+        let briefed = invocation(Path::new("/work-alias"), Some("\"the key is set\""), &[]);
         let arguments: Vec<_> = briefed
             .as_std()
             .get_args()
@@ -245,7 +272,11 @@ mod tests {
 
     #[test]
     fn nothing_codex_runs_on_the_host_is_left_to_a_dialog() {
-        let command = invocation(Path::new("/home/researcher/.fishbowl/work/c0ffee"), None);
+        let command = invocation(
+            Path::new("/home/researcher/.fishbowl/work/c0ffee"),
+            None,
+            &[],
+        );
         let arguments: Vec<_> = command.as_std().get_args().collect();
         assert!(
             arguments

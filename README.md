@@ -38,6 +38,9 @@ dies, the redirect target stops listening and egress fails closed.
 cargo install fishbowl
 ```
 
+Tagged `fishbowl-v*` releases also ship a prebuilt aarch64-apple-darwin binary and a
+`fishbowl-installer.sh` for systems without a Rust toolchain.
+
 fishbowl needs macOS with Apple's [`container`](https://github.com/apple/container) tool
 installed and its service started (`container system start`). Everything else — the Kali
 image, the auditing gateway — is pulled, not built.
@@ -104,10 +107,11 @@ and the loss is the token it was lent for those hours — the virtual machine st
 ## Your own keys
 
 A MalwareBazaar key on the host is handed to the session. Export it as
-`MALWAREBAZAAR_API_KEY` and every session you open afterwards has the same variable in the
-researcher account's environment; leave it unset and nothing is passed. There is no flag
-and no setting, because the variable is the switch. The summary printed when a session
-opens says which it was.
+`MALWAREBAZAAR_API_KEY` — or `MALWAREBAZAAR_AUTH_KEY`, after the `Auth-Key` header it is
+sent as — and every session you open afterwards has the key as `MALWAREBAZAAR_API_KEY` in
+the researcher account's environment; leave both unset and nothing is passed. There is no
+flag and no setting, because the variable is the switch. The summary printed when a
+session opens says which it was.
 
 The value travels in ssh's own environment forwarding, by name, so it never appears on a
 command line, and the session's sshd accepts that one name and no other. Samples never see

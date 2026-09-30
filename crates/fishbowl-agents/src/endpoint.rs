@@ -28,9 +28,44 @@ pub struct SandboxEndpoint {
     /// so it never appears on a command line, and sends nothing for a name that is not
     /// set. The sandbox's sshd accepts the same names and no others.
     pub send_environment: Vec<String>,
+    /// The (sent name, held name) pairs a client must run with on top of what it
+    /// inherits.
+    ///
+    /// `SendEnv` reads a value under the name it is sent as, so a key the host holds
+    /// under an alias has to reach the client's environment under the sent name for the
+    /// client to send. Only the names live here: [`Self::client_environment`] resolves
+    /// each held name's value at spawn, so a `Debug` print of this endpoint can never
+    /// show a credential.
+    pub environment_aliases: Vec<(std::ffi::OsString, std::ffi::OsString)>,
 }
 
 impl SandboxEndpoint {
+    /// The (variable, value) pairs to run a client with: each alias's value under the
+    /// name it is sent as, resolved from this process's environment — the same one the
+    /// spawned client inherits.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a held name is no longer set — the handoff only records names it
+    /// observed, in this same environment.
+    #[must_use]
+    pub fn client_environment(&self) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+        self.environment_aliases
+            .iter()
+            .map(|(sent, held)| {
+                (
+                    sent.clone(),
+                    std::env::var_os(held).unwrap_or_else(|| {
+                        panic!(
+                            "{} was observed set when the endpoint was built",
+                            held.display()
+                        )
+                    }),
+                )
+            })
+            .collect()
+    }
+
     /// `user@host`, the form both agents' SSH invocations take.
     #[must_use]
     pub fn destination(&self) -> String {
@@ -87,6 +122,7 @@ mod tests {
             known_hosts: PathBuf::from("/state/known_hosts").join(id),
             start_directory: PathBuf::from("/work"),
             send_environment: vec!["MALWAREBAZAAR_API_KEY".to_owned()],
+            environment_aliases: Vec::new(),
         }
     }
 

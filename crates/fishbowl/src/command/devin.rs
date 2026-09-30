@@ -60,7 +60,12 @@ pub async fn run(host: &Host, arguments: &cli::Devin) -> Result<()> {
     let loan = Loan::open(Lender::Devin(login), host.loan_socket(&attachment)).await?;
 
     let known_hosts = host.known_hosts_of(&record.id).await?;
-    let endpoint = record.endpoint(session.address, known_hosts, handoff.sent());
+    let endpoint = record.endpoint(
+        session.address,
+        known_hosts,
+        handoff.sent(),
+        handoff.environment_aliases(),
+    );
     let runtime_dir = &host.layout().runtime_dir;
     let errand = Errand {
         agent: "devin",
