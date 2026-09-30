@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/lexoliu/fishbowl/compare/fishbowl-image-v0.1.1...fishbowl-image-v0.2.0) - 2026-09-30
+
+### Other
+
+- Forward MALWAREBAZAAR_AUTH_KEY as MALWAREBAZAAR_API_KEY; ship dist artifacts ([#55](https://github.com/lexoliu/fishbowl/pull/55))
+
 ## [0.1.1](https://github.com/lexoliu/fishbowl/compare/fishbowl-image-v0.1.0...fishbowl-image-v0.1.1) - 2026-09-12
 
 ### Added
