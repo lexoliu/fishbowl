@@ -25,6 +25,7 @@ version = "0.2.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/lexoliu/fishbowl"
+readme = "README.md"
 authors = ["Lexo Liu <me@lexo.cool>"]
 rust-version = "1.90"
 
