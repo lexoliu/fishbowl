@@ -20,3 +20,7 @@ tag-namespace = "fishbowl-v"
 create-release = false
 # A check that the release plan still makes sense, run on pull requests.
 pr-run-mode = "plan"
+# release-plz pushes tags with GITHUB_TOKEN, which cannot fire a tag-triggered
+# workflow; release-plz.yml dispatches this one by tag instead, and the same
+# dispatch input is the manual re-release path.
+dispatch-releases = true
