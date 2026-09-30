@@ -18,6 +18,10 @@ tag-namespace = "fishbowl-v"
 # release-plz has already opened the GitHub Release by the time the tag lands; dist
 # attaches artifacts to that release instead of racing to create a second one.
 create-release = false
+# The workspace default of `cargo build --workspace` would also compile the
+# guest-only crates (fishbowl-gateway, fishbowl-courier), which do not build on
+# macOS. Build just the announced package instead.
+precise-builds = true
 # A check that the release plan still makes sense, run on pull requests.
 pr-run-mode = "plan"
 # release-plz pushes tags with GITHUB_TOKEN, which cannot fire a tag-triggered
