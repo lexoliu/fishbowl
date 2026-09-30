@@ -8,6 +8,10 @@ repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 
+# Its only binary is stage-context, a build helper the image job invokes from source.
+[package.metadata.dist]
+dist = false
+
 [dependencies]
 askama.workspace = true
 clap.workspace = true

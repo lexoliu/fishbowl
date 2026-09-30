@@ -32,9 +32,15 @@ pub async fn run(host: &Host, arguments: &cli::Shell) -> Result<()> {
     banner(host, &session, &handoff, "shell")?;
 
     let known_hosts = host.known_hosts_of(&record.id).await?;
-    let endpoint = record.endpoint(session.address, known_hosts, handoff.sent());
+    let endpoint = record.endpoint(
+        session.address,
+        known_hosts,
+        handoff.sent(),
+        handoff.environment_aliases(),
+    );
 
     let mut client = std::process::Command::new("ssh");
+    client.envs(endpoint.client_environment());
     if arguments.command.is_empty() {
         // A shell without a terminal is one without job control, line editing or a
         // prompt — the endpoint's arguments end with the destination, so this goes in

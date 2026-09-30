@@ -180,6 +180,7 @@ mod tests {
             known_hosts: PathBuf::from("/keys/known_hosts"),
             start_directory: PathBuf::from("/work"),
             send_environment: Vec::new(),
+            environment_aliases: Vec::new(),
         }
     }
 

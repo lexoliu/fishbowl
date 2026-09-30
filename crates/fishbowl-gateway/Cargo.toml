@@ -8,6 +8,10 @@ repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 
+# Guest-side: it only builds for Linux and only ever runs inside the image.
+[package.metadata.dist]
+dist = false
+
 [dependencies]
 fishbowl-audit = { workspace = true, features = ["io"] }
 anyhow.workspace = true

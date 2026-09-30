@@ -244,6 +244,7 @@ fn invocation(endpoint: &SandboxEndpoint, errand: &Errand, host_socket: &Path) -
         "-R",
     ]);
     command.arg(forward(&errand.socket, host_socket));
+    command.envs(endpoint.client_environment());
     // The destination is the last of these, so everything of ours goes in front of it.
     command.args(endpoint.ssh_arguments());
     command.arg(errand.remote_command());
@@ -278,6 +279,7 @@ mod tests {
             known_hosts: PathBuf::from("/state/known_hosts/c0ffee"),
             start_directory: PathBuf::from("/work"),
             send_environment: Vec::new(),
+            environment_aliases: Vec::new(),
         }
     }
 
