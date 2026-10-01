@@ -16,7 +16,7 @@ use anyhow::{Context as _, Result, bail};
 use fishbowl_egress::Mode;
 use fishbowl_runtime::{
     Arch, Capability, ContainerName, ContainerSpec, ContainerState, ImageReference, Mount,
-    Reservation, RunState, Sandbox,
+    Reservation, RunState, Sandbox, toolchain,
 };
 use jiff::Timestamp;
 
@@ -116,27 +116,54 @@ async fn resolve(host: &Host, resume: Option<&cli::Resume>) -> Result<Option<Ses
     }
 }
 
-/// Starts the runtime's system services when they are not already up.
+/// Starts the runtime's system services when they are not already up, and moves them
+/// onto the toolchain this build carries when they are up under a different version.
 ///
 /// This is the one repair the old `doctor --fix` did that a session cannot do without:
 /// without the API server there is no runtime to ask anything of. And the probe itself
 /// fails on a fresh install: `container system status` exits non-zero while the API
 /// server is unregistered, so a failing probe is the "not running" answer, not a reason
-/// to stop.
+/// to stop. A server answering under another version is the same situation with worse
+/// manners — the toolchain pin is the version this driver was written for — so its
+/// services are stopped and started again from the managed root, the same move a
+/// package upgrade makes. Machines it was holding are stopped, not deleted; they
+/// resume on the next opening.
 async fn ensure_services(host: &Host) -> Result<()> {
-    let running = host
-        .runtime()
-        .system_status()
-        .await
-        .is_ok_and(|status| status.is_running());
-    if running {
-        return Ok(());
+    match host.runtime().system_status().await {
+        Ok(status) if status.is_running() => {
+            if status
+                .server
+                .as_ref()
+                .is_some_and(|server| server.version == toolchain::VERSION)
+            {
+                return Ok(());
+            }
+            let running = status
+                .server
+                .as_ref()
+                .map_or("unknown", |server| server.version.as_str());
+            tracing::info!(
+                running = %running,
+                bundled = toolchain::VERSION,
+                "the runtime's services run a different toolchain; restarting them"
+            );
+            host.runtime()
+                .system_stop()
+                .await
+                .context("stopping the runtime's services")?;
+            host.runtime()
+                .system_start()
+                .await
+                .context("starting the runtime's services")
+        }
+        _ => {
+            tracing::info!("starting the runtime's services");
+            host.runtime()
+                .system_start()
+                .await
+                .context("starting the runtime's services")
+        }
     }
-    tracing::info!("starting the runtime's services");
-    host.runtime()
-        .system_start()
-        .await
-        .context("starting the runtime's services")
 }
 
 /// Creates a session, and the machine underneath it.

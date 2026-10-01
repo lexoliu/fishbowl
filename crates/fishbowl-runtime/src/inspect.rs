@@ -19,6 +19,18 @@ pub struct SystemStatus {
     pub status: String,
     /// Where the runtime keeps its files.
     pub paths: SystemPaths,
+    /// What the answering API server was built as, when the field exists — a server
+    /// older than the nested-status schema reports none.
+    #[serde(default)]
+    pub server: Option<ServerInfo>,
+}
+
+/// The versioned identity `system status` reports for the running API server.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerInfo {
+    /// Release the running API server was built from.
+    pub version: String,
 }
 
 /// The part of `system status` that locates the runtime's directories.
@@ -277,5 +289,10 @@ mod tests {
     fn system_status_reports_running() {
         let status: SystemStatus = serde_json::from_str(SYSTEM_STATUS).unwrap();
         assert!(status.is_running());
+        assert_eq!(
+            status.server.as_ref().map(|server| server.version.as_str()),
+            Some("1.5.0"),
+            "the answering server's build version is what a toolchain upgrade keys on"
+        );
     }
 }

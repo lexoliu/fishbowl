@@ -176,12 +176,30 @@ impl AppleContainer {
         })
     }
 
-    /// Starts the runtime's system services.
+    /// Starts the runtime's system services, installing the default kernel when absent.
+    ///
+    /// `--enable-kernel-install` answers the kernel prompt non-interactively: the CLI
+    /// otherwise reads it from a terminal, which an invocation driving the runtime is
+    /// not, and a session cannot open without a kernel anyway.
     ///
     /// # Errors
     /// Fails when the services cannot be started.
     pub async fn system_start(&self) -> Result<(), RuntimeError> {
-        self.output(&["system", "start"]).await.map(drop)
+        self.output(&["system", "start", "--enable-kernel-install"])
+            .await
+            .map(drop)
+    }
+
+    /// Stops the runtime's system services, stopping every running container first.
+    ///
+    /// `system stop` is also the moving half of a toolchain change: it deregisters the
+    /// services whatever install root they came from, so the [`Self::system_start`]
+    /// that follows registers this one's.
+    ///
+    /// # Errors
+    /// Fails when the services cannot be stopped.
+    pub async fn system_stop(&self) -> Result<(), RuntimeError> {
+        self.output(&["system", "stop"]).await.map(drop)
     }
 
     /// Installs the recommended guest kernel for `arch`.

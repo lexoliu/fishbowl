@@ -62,9 +62,11 @@ cargo install fishbowl
 Tagged `fishbowl-v*` releases also ship a prebuilt aarch64-apple-darwin binary and a
 `fishbowl-installer.sh` for systems without a Rust toolchain.
 
-fishbowl needs macOS with Apple's [`container`](https://github.com/apple/container) tool
-installed and its service started (`container system start`). Everything else — the Kali
-image, the auditing gateway — is pulled, not built.
+fishbowl carries its own runtime: on first use it fetches Apple's signed
+[`container`](https://github.com/apple/container) release — a version this build pins
+by digest — into `~/.fishbowl/toolchain`, and starts its services itself. Nothing
+needs to be installed first; everything after — the Kali image, the auditing gateway —
+is pulled, not built.
 
 ## Use
 
@@ -217,7 +219,7 @@ untouched — its credentials file is read, never written.
 | Crate | Role |
 |---|---|
 | `fishbowl` | The CLI |
-| `fishbowl-runtime` | Typed driver for the `container` CLI |
+| `fishbowl-runtime` | Typed driver for the `container` CLI, and the fetcher that lays its pinned toolchain down |
 | `fishbowl-image` | Renders the Dockerfile, entrypoint and egress policy; stages the build context |
 | `fishbowl-gateway` | The in-guest auditing proxy (Linux only) |
 | `fishbowl-courier` | Holds an agent's borrowed credential in-guest (Linux only) |
@@ -245,7 +247,9 @@ Signed the same way each time, you answer once.
 
 ## Requirements
 
-macOS 26 on Apple silicon, and `brew install container`.
+macOS 26 on Apple silicon, and nothing else: the `container` toolchain is fetched on
+first run. `FISHBOWL_CONTAINER` can point at a `container` binary to drive instead of
+the managed one — for trying an upstream build, say — and is otherwise left unset.
 
 ## License
 

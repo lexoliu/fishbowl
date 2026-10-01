@@ -36,7 +36,7 @@ async fn main() -> Result<()> {
         .init();
 
     let arguments = Cli::parse();
-    let host = Host::discover()?;
+    let host = Host::discover().await?;
 
     match &arguments.command {
         cli::Command::Claude(claude) => command::claude::run(&host, claude).await,
