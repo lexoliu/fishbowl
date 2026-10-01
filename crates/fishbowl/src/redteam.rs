@@ -85,6 +85,15 @@ fn frame() -> String {
     // The skull's leading spaces are its shape — centring each line would fold the
     // jaw into the cranium. The block is centred as a whole instead: strip the common
     // margin, then pad every skull line by the same amount.
+    enum Pad {
+        /// Flush left; the line's own leading spaces are the drawing.
+        Skull,
+        /// Centred row (the title).
+        Centre,
+        /// Flush left prose.
+        Left,
+    }
+
     let skull: Vec<&str> = SKULL.trim_end().lines().collect();
     let margin = skull
         .iter()
@@ -97,24 +106,14 @@ fn frame() -> String {
         .max()
         .unwrap_or_default();
 
-    enum Pad {
-        /// Flush left; the line's own leading spaces are the drawing.
-        Skull,
-        /// Centred row (the title).
-        Centre,
-        /// Flush left prose.
-        Left,
-    }
-    use Pad::*;
-
     let mut rows: Vec<(String, Pad)> = skull
         .iter()
-        .map(|line| (line[margin..].to_owned(), Skull))
+        .map(|line| (line[margin..].to_owned(), Pad::Skull))
         .collect();
-    rows.push((String::new(), Left));
-    rows.push((TITLE.to_owned(), Centre));
-    rows.push((String::new(), Left));
-    rows.extend(BODY.iter().map(|line| ((*line).to_owned(), Left)));
+    rows.push((String::new(), Pad::Left));
+    rows.push((TITLE.to_owned(), Pad::Centre));
+    rows.push((String::new(), Pad::Left));
+    rows.extend(BODY.iter().map(|line| ((*line).to_owned(), Pad::Left)));
 
     let width = rows
         .iter()
@@ -128,9 +127,9 @@ fn frame() -> String {
     for (row, pad) in &rows {
         let slack = width - row.chars().count();
         let left = match pad {
-            Skull => (width - skull_width) / 2,
-            Centre => slack.div_ceil(2),
-            Left => 0,
+            Pad::Skull => (width - skull_width) / 2,
+            Pad::Centre => slack.div_ceil(2),
+            Pad::Left => 0,
         };
         let _ = writeln!(
             frame,
