@@ -62,5 +62,11 @@ tokio-rustls = { workspace = true, optional = true }
 tor-rtcompat = { workspace = true, optional = true }
 webpki-roots = { workspace = true, optional = true }
 
+# The smoke example needs a full Tokio runtime and log output the library itself does
+# not.
+[dev-dependencies]
+tokio.workspace = true
+tracing-subscriber.workspace = true
+
 [lints]
 workspace = true
