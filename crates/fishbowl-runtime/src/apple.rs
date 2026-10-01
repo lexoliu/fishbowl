@@ -419,7 +419,7 @@ impl AppleContainer {
         containers: &[ContainerName],
         images: &[&ImageInfo],
     ) -> Result<u64, RuntimeError> {
-        let root = PathBuf::from(&self.system_status().await?.app_root);
+        let root = PathBuf::from(&self.system_status().await?.paths.app_root);
         let mut total = 0;
         for name in containers {
             total += directory_size(&root.join("containers").join(name.as_str())).await?;
