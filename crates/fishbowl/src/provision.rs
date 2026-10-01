@@ -119,17 +119,20 @@ async fn resolve(host: &Host, resume: Option<&cli::Resume>) -> Result<Option<Ses
 /// Starts the runtime's system services when they are not already up.
 ///
 /// This is the one repair the old `doctor --fix` did that a session cannot do without:
-/// without the API server there is no runtime to ask anything of.
+/// without the API server there is no runtime to ask anything of. And the probe itself
+/// fails on a fresh install: `container system status` exits non-zero while the API
+/// server is unregistered, so a failing probe is the "not running" answer, not a reason
+/// to stop.
 async fn ensure_services(host: &Host) -> Result<()> {
-    let status = host
+    let running = host
         .runtime()
         .system_status()
         .await
-        .context("asking the runtime whether its services are running")?;
-    if status.is_running() {
+        .is_ok_and(|status| status.is_running());
+    if running {
         return Ok(());
     }
-    tracing::info!(status = status.status, "starting the runtime's services");
+    tracing::info!("starting the runtime's services");
     host.runtime()
         .system_start()
         .await
