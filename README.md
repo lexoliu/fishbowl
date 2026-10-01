@@ -23,14 +23,26 @@ present only while the agent runs. Samples are detonated under a third account n
 credential is ever written for, so a sample that reads every file it can reach still finds
 none.
 
-**No packet leaves unaudited.** Apart from the detonation account's — whose traffic is
-cut entirely — traffic is redirected by uid to an in-guest gateway that
-terminates TLS with its own authority and records every DNS question, connection, TLS
-handshake and HTTP exchange as JSONL. Anything the gateway cannot audit — QUIC above all
-— is dropped by the packet filter rather than passed. The policy is installed by the init
-process before anything else runs, and `CAP_NET_ADMIN` is removed from the bounding set
-afterwards, so code inside the sandbox cannot change it even as root. If the gateway
-dies, the redirect target stops listening and egress fails closed.
+**Every TCP connection and DNS question crosses the gateway; how much of it is
+inspected is your call.** Apart from the detonation account's — whose traffic is cut
+entirely — traffic is redirected by uid to an in-guest gateway, and the session's audit
+tier (`--audit`), settled when the session is created, says what it does with it:
+
+- `strict` terminates TLS with its own authority and records every DNS question,
+  connection, TLS handshake and HTTP exchange as JSONL. Anything the gateway cannot
+  audit — QUIC above all — is dropped by the packet filter rather than passed.
+- `default` audits without standing in the connection's way: TLS client hellos are read
+  for their SNI and relayed end-to-end untouched, plaintext HTTP is parsed where it
+  already is plaintext, and traffic no permitted egress route can carry is refused
+  immediately rather than dropped into a timeout.
+- `off` relays everything and records nothing about it. The egress layer's own route
+  reports still land on the trail — they carry no user traffic, and they are the
+  host's proof that a strict egress mode is really being enforced.
+
+The policy is installed by the init process before anything else runs, and
+`CAP_NET_ADMIN` is removed from the bounding set afterwards, so code inside the
+sandbox cannot change it even as root. If the gateway dies, the redirect target stops
+listening and egress fails closed.
 
 **The route out is yours.** Audited traffic leaves the machine over an egress transport
 chosen when the session is opened (`--egress`): `auto`, the default, tunnels through

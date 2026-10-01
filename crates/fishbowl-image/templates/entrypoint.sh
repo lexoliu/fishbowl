@@ -25,14 +25,19 @@ install -d -o "${GATEWAY_USER}" -g "${GATEWAY_USER}" -m 0750 "$(dirname "${AUDIT
 # restart, so they live under the gateway's home rather than beside the audit trail.
 install -d -o "${GATEWAY_USER}" -g "${GATEWAY_USER}" -m 0700 "${EGRESS_STATE}"
 
-# The authority is minted in its own run, so it is on disk and in the sandbox's trust
-# store before anything is listening. Waiting on a file a background process may or may
-# not have written yet would make the first outbound connection a race.
-setpriv --reuid="${GATEWAY_USER}" --regid="${GATEWAY_USER}" --clear-groups \
-  "${GATEWAY}" init-ca --ca-certificate "${CA_CERTIFICATE}"
+# The interception authority is only minted by the tier that terminates TLS: under the
+# `default` and `off` tiers no leaf is ever signed, and the sandbox's trust store stays
+# exactly what the image shipped — which is also what makes pass-through TLS verify.
+if [ "${FISHBOWL_AUDIT:-strict}" = "strict" ]; then
+  # The authority is minted in its own run, so it is on disk and in the sandbox's trust
+  # store before anything is listening. Waiting on a file a background process may or
+  # may not have written yet would make the first outbound connection a race.
+  setpriv --reuid="${GATEWAY_USER}" --regid="${GATEWAY_USER}" --clear-groups \
+    "${GATEWAY}" init-ca --ca-certificate "${CA_CERTIFICATE}"
 
-cp "${CA_CERTIFICATE}" /usr/local/share/ca-certificates/fishbowl-gateway.crt
-update-ca-certificates >/dev/null
+  cp "${CA_CERTIFICATE}" /usr/local/share/ca-certificates/fishbowl-gateway.crt
+  update-ca-certificates >/dev/null
+fi
 
 # The gateway keeps CAP_NET_ADMIN through the uid change by way of the file capability
 # set on its binary, which the image build verifies. It needs it to bind the netfilter
@@ -48,7 +53,8 @@ setpriv --reuid="${GATEWAY_USER}" --regid="${GATEWAY_USER}" --clear-groups \
     --nflog-group {{ nflog_group }} \
     --upstream-resolver "${FISHBOWL_RESOLVER}" \
     --egress "${FISHBOWL_EGRESS:-auto}" \
-    --egress-state "${EGRESS_STATE}" &
+    --egress-state "${EGRESS_STATE}" \
+    --audit "${FISHBOWL_AUDIT:-strict}" &
 
 # The host's public key arrives in the environment rather than on a mount. sshd refuses an
 # authorized-keys file it does not consider safely owned, and a file this script writes as

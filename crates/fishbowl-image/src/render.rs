@@ -315,7 +315,10 @@ mod tests {
     #[test]
     fn nothing_but_the_gateway_and_loopback_is_accepted_on_the_way_out() {
         let policy = rendered().egress_policy;
-        let accepts: Vec<&str> = policy
+        // Every accept before the tier/egress tail is unconditional — under `strict`
+        // these five are the only ones that exist.
+        let tail = policy.find(r#"if [ "${AUDIT}" = "strict" ]"#).unwrap();
+        let accepts: Vec<&str> = policy[..tail]
             .lines()
             .filter(|line| line.starts_with("iptables -A OUTPUT") && line.ends_with("-j ACCEPT"))
             .collect();
@@ -331,6 +334,40 @@ mod tests {
             "every accept is matched by interface, uid, connection state, or the \
              loopback destination the redirection itself wrote; an accept matched by \
              protocol alone would let traffic the redirection missed leave unaudited"
+        );
+
+        // The one blanket accept the policy has is the permissive-egress tail — it sits
+        // inside the `elif` that only `auto` and `direct` reach, and it is preceded by
+        // the flow's NFLOG record, so forwarded traffic still lands on the trail.
+        let tail_accepts: Vec<&str> = policy[tail..]
+            .lines()
+            .map(str::trim_start)
+            .filter(|line| line.starts_with("iptables -A OUTPUT") && line.ends_with("-j ACCEPT"))
+            .collect();
+        assert_eq!(
+            tail_accepts,
+            vec!["iptables -A OUTPUT -j ACCEPT"],
+            "the only unconditional accept is the permissive-egress fallback"
+        );
+        let forwarded = policy
+            .find(r#"--nflog-prefix "fishbowl-forwarded""#)
+            .unwrap();
+        let permissive_accept = policy[tail..].find("-A OUTPUT -j ACCEPT").unwrap() + tail;
+        let noroute = policy.find("icmp-admin-prohibited").unwrap();
+        assert!(
+            forwarded < permissive_accept && permissive_accept < noroute,
+            "a flow is recorded before it is let out, and refusal is the strict-egress \
+             branch's answer, never the permissive one's"
+        );
+
+        // The detonation account's drop precedes every accept in the chain, so no tier
+        // or egress combination can reopen the path a detonated C2 would take.
+        let detonate_drop = policy
+            .find(r#"--uid-owner "${DETONATE_UID}" -j DROP"#)
+            .unwrap();
+        assert!(
+            detonate_drop < permissive_accept,
+            "detonate's refusal is fixed ahead of every tail"
         );
     }
 

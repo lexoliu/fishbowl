@@ -9,6 +9,7 @@ mod audit;
 mod ca;
 mod dns;
 mod error;
+mod hello;
 mod http;
 mod nflog;
 mod peer;
@@ -25,12 +26,12 @@ use std::{
 
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
-use fishbowl_audit::{AuditEvent, Route};
+use fishbowl_audit::{AuditEvent, Route, Tier};
 use fishbowl_egress::{Egress, Mode, Routes};
 use tokio::net::{TcpListener, UdpSocket};
 use tracing_subscriber::EnvFilter;
 
-use crate::{ca::CertificateAuthority, tls::TlsBridge};
+use crate::{ca::CertificateAuthority, tcp::Inspection, tls::TlsBridge};
 
 /// Command line of the in-sandbox audit gateway.
 #[derive(Debug, Parser)]
@@ -100,6 +101,18 @@ struct Serve {
     /// device registration and Tor's cache.
     #[arg(long)]
     egress_state: PathBuf,
+    /// How much of the sandbox's traffic to inspect before relaying it.
+    ///
+    /// `strict` terminates TLS and lets the packet filter drop whatever cannot be
+    /// audited in cleartext; `default` audits without standing in the way — client
+    /// hellos are read for their SNI and relayed untouched, and traffic no route can
+    /// carry is refused rather than dropped; `off` relays everything and records
+    /// nothing but this gateway's own route reports.
+    ///
+    /// The default is the heaviest tier on purpose: reductions in what the trail can
+    /// say are requested explicitly, by the session that wants them.
+    #[arg(long, value_enum, default_value_t = Tier::Strict)]
+    audit: Tier,
 }
 
 /// Parses `--egress`, accepting every mode the host's record can name — including
@@ -138,15 +151,21 @@ async fn init_ca(arguments: InitCa) -> anyhow::Result<()> {
 }
 
 async fn serve(arguments: Serve) -> anyhow::Result<()> {
-    let (sink, writer) = audit::spawn(&arguments.sandbox, &arguments.audit_trail)
+    let (sink, writer) = audit::spawn(&arguments.sandbox, &arguments.audit_trail, arguments.audit)
         .await
         .context("opening the audit trail")?;
-    let authority = Arc::new(
-        CertificateAuthority::load_or_create(&arguments.ca_certificate)
-            .await
-            .context("preparing the interception certificate authority")?,
-    );
-    let bridge = Arc::new(TlsBridge::new(authority));
+    // The interception authority is only loaded by the tier that terminates TLS — under
+    // `default` and `off` no leaf is ever minted, and the entrypoint never installed
+    // the CA into the trust store.
+    let inspection = match arguments.audit {
+        Tier::Strict => Inspection::Terminate(Arc::new(TlsBridge::new(Arc::new(
+            CertificateAuthority::load_or_create(&arguments.ca_certificate)
+                .await
+                .context("preparing the interception certificate authority")?,
+        )))),
+        Tier::Default => Inspection::Observe,
+        Tier::Off => Inspection::Pass,
+    };
 
     // Both sockets bind the loopback address rather than a wildcard, because that is the
     // address the packet filter's redirection rewrites the sandbox's traffic to. It also
@@ -187,11 +206,12 @@ async fn serve(arguments: Serve) -> anyhow::Result<()> {
         proxy_port = arguments.proxy_port,
         dns_port = arguments.dns_port,
         egress = %arguments.egress,
+        audit = %arguments.audit,
         "the audit gateway is ready"
     );
 
     let result = tokio::try_join!(
-        tcp::serve(proxy, bridge, Arc::clone(&egress), sink.clone()),
+        tcp::serve(proxy, inspection, Arc::clone(&egress), sink.clone()),
         dns::serve(resolver, upstream, egress, sink.clone()),
         nflog::watch(arguments.nflog_group, sink),
     );

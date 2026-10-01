@@ -1,6 +1,6 @@
 use std::{path::Path, sync::Arc};
 
-use fishbowl_audit::{AuditEvent, AuditRecord, AuditWriter};
+use fishbowl_audit::{AuditEvent, AuditRecord, AuditWriter, Tier};
 use jiff::Timestamp;
 use tokio::{sync::mpsc, task::JoinHandle};
 
@@ -16,11 +16,15 @@ const QUEUE_DEPTH: usize = 1024;
 /// Handle every connection uses to report what it observed.
 ///
 /// The audit trail has exactly one writer — the task [`spawn`] owns — and every producer
-/// reaches it through this channel, so no lock is ever taken on the file.
+/// reaches it through this channel, so no lock is ever taken on the file. The session's
+/// audit tier is enforced here: under `off` only the egress layer's own route reports
+/// are written — they describe the gateway's transports, not a byte of user traffic,
+/// and they are the host's proof that a strict egress mode is being enforced.
 #[derive(Debug, Clone)]
 pub struct AuditSink {
     sandbox: Arc<str>,
     uid: Option<u32>,
+    tier: Tier,
     records: mpsc::Sender<AuditRecord>,
 }
 
@@ -35,12 +39,24 @@ impl AuditSink {
         Self {
             sandbox: Arc::clone(&self.sandbox),
             uid,
+            tier: self.tier,
             records: self.records.clone(),
         }
     }
 
+    /// Whether traffic events would be written — under `off` nothing about a
+    /// connection lands on the trail, so the lookups that attribute and the handlers
+    /// that observe can be skipped outright.
+    #[must_use]
+    pub fn records_traffic(&self) -> bool {
+        self.tier != Tier::Off
+    }
+
     /// Appends one event to the trail, waiting if the writer is behind.
     pub async fn record(&self, event: AuditEvent) {
+        if !self.records_traffic() && !matches!(event, AuditEvent::Egress(_)) {
+            return;
+        }
         let record = AuditRecord {
             at: Timestamp::now(),
             sandbox: self.sandbox.to_string(),
@@ -59,7 +75,7 @@ impl AuditSink {
 ///
 /// # Errors
 /// Fails when the trail cannot be opened for appending.
-pub async fn spawn(sandbox: &str, trail: &Path) -> Result<(AuditSink, JoinHandle<()>)> {
+pub async fn spawn(sandbox: &str, trail: &Path, tier: Tier) -> Result<(AuditSink, JoinHandle<()>)> {
     let mut writer = AuditWriter::open(trail).await?;
     let (records, mut incoming) = mpsc::channel(QUEUE_DEPTH);
     let task = tokio::spawn(async move {
@@ -73,6 +89,7 @@ pub async fn spawn(sandbox: &str, trail: &Path) -> Result<(AuditSink, JoinHandle
         AuditSink {
             sandbox: Arc::from(sandbox),
             uid: None,
+            tier,
             records,
         },
         task,

@@ -13,7 +13,7 @@ mod io;
 
 pub use record::{
     AuditEvent, AuditRecord, BlockReason, Blocked, Connect, DnsAnswer, DnsQuery, Egress, Endpoint,
-    HttpExchange, Route, TlsHandshake, Transport,
+    Forwarded, HttpExchange, NotATier, Route, Tier, TlsHandshake, TlsSeen, Transport,
 };
 
 #[cfg(feature = "io")]

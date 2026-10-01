@@ -13,7 +13,7 @@ use std::{
 };
 
 use anyhow::{Context as _, Result, bail};
-use fishbowl_audit::{AuditEvent, AuditRecord, Route as AuditRoute};
+use fishbowl_audit::{AuditEvent, AuditRecord, Route as AuditRoute, Tier};
 use fishbowl_egress::Mode;
 use fishbowl_runtime::{
     Arch, Capability, ContainerName, ContainerSpec, ContainerState, ImageReference, Mount,
@@ -58,6 +58,7 @@ const RESOLVER_VARIABLE: &str = "FISHBOWL_RESOLVER";
 const AUTHORIZED_KEY_VARIABLE: &str = "FISHBOWL_AUTHORIZED_KEY";
 const WORK_ALIAS_VARIABLE: &str = "FISHBOWL_WORK_ALIAS";
 const EGRESS_VARIABLE: &str = "FISHBOWL_EGRESS";
+const AUDIT_VARIABLE: &str = "FISHBOWL_AUDIT";
 
 /// A session whose machine is running and reachable right now, held by this process.
 #[derive(Debug)]
@@ -186,6 +187,8 @@ async fn create(host: &Host, attach: &cli::Attach) -> Result<Session> {
     } else {
         attach.egress.unwrap_or_default()
     };
+    // Orthogonal to the egress it rides on: `default` audits without intercepting.
+    let audit = attach.audit.unwrap_or_default();
     let samples = canonical_samples(attach.samples.as_deref())?;
 
     // The image is named before anything is reclaimed, because reclamation takes away
@@ -224,6 +227,7 @@ async fn create(host: &Host, attach: &cli::Attach) -> Result<Session> {
         image: image.clone(),
         arch,
         egress,
+        audit,
         key: &key,
         reservation,
         samples: samples.clone(),
@@ -246,6 +250,7 @@ async fn create(host: &Host, attach: &cli::Attach) -> Result<Session> {
         work_dir: layout.work_dir.clone(),
         samples,
         egress,
+        audit,
         redteam: attach.redteam,
         identity_file: key.identity_file().to_path_buf(),
         created_at: now,
@@ -318,6 +323,17 @@ async fn resume(host: &Host, attach: &cli::Attach, mut record: SessionRecord) ->
             record.egress
         );
     }
+    if let Some(audit) = attach.audit
+        && audit != record.audit
+    {
+        bail!(
+            "session {} was created with `--audit {}`, but was asked for {audit}; a \
+             machine's audit tier is settled when it is created, so start a new session \
+             for {audit} instead",
+            record.id,
+            record.audit
+        );
+    }
 
     if container.status.state == RunState::Running {
         // The lock was free, so no owner is attached: a machine this old was left
@@ -387,6 +403,7 @@ struct Machine<'key> {
     image: ImageReference,
     arch: Arch,
     egress: Mode,
+    audit: Tier,
     key: &'key SandboxKey,
     reservation: Reservation<Sandbox>,
     samples: Option<PathBuf>,
@@ -433,6 +450,8 @@ impl Machine<'_> {
         );
         spec.env
             .insert(EGRESS_VARIABLE.to_owned(), self.egress.to_string());
+        spec.env
+            .insert(AUDIT_VARIABLE.to_owned(), self.audit.to_string());
         // Not a mount: the entrypoint makes this path a symlink to the work directory, so an
         // agent that resolved it on the host executes in the session's own filesystem and
         // the host directory it named stays empty.

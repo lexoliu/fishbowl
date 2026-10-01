@@ -1616,6 +1616,7 @@ dependencies = [
 name = "fishbowl-audit"
 version = "0.2.1"
 dependencies = [
+ "clap",
  "jiff",
  "serde",
  "serde_json",
