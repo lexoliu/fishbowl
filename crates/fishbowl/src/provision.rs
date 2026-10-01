@@ -26,7 +26,7 @@ use crate::{
     image,
     keys::SandboxKey,
     lease::Lease,
-    pick, reclaim,
+    pick, reclaim, redteam,
     session::{SessionId, SessionRecord},
 };
 
@@ -69,13 +69,30 @@ pub struct Session {
 ///
 /// # Errors
 /// Fails when the host cannot carry another machine, when the image cannot be built, when
-/// an argument contradicts the session being resumed, or when the machine does not answer
-/// in time.
+/// an argument contradicts the session being resumed, when a red team session's
+/// authorization is not attested, or when the machine does not answer in time.
 pub async fn open(host: &Host, attach: &cli::Attach) -> Result<Session> {
     ensure_services(host).await?;
-    match resolve(host, attach.resume.as_ref()).await? {
-        Some(record) => resume(host, attach, record).await,
-        None => create(host, attach).await,
+    if let Some(record) = resolve(host, attach.resume.as_ref()).await? {
+        if attach.redteam && !record.redteam {
+            bail!(
+                "session {} was not created as a red team engagement; a session's \
+                 posture is settled when it is created, so start a new session with \
+                 `--redteam` instead",
+                record.id
+            );
+        }
+        // A red team session asks for its attestation on every opening, not only
+        // on the first: the answer is about this use, not the one that made it.
+        if record.redteam {
+            redteam::attest()?;
+        }
+        resume(host, attach, record).await
+    } else {
+        if attach.redteam {
+            redteam::attest()?;
+        }
+        create(host, attach).await
     }
 }
 
@@ -122,7 +139,13 @@ async fn ensure_services(host: &Host) -> Result<()> {
 /// Creates a session, and the machine underneath it.
 async fn create(host: &Host, attach: &cli::Attach) -> Result<Session> {
     let arch = attach.arch.unwrap_or(Arch::HOST);
-    let egress = attach.egress.unwrap_or_default();
+    // A red team session's egress is the mode's own: an anonymizing transport, never
+    // the machine's address. `--egress` cannot be combined with it — clap refuses.
+    let egress = if attach.redteam {
+        Mode::Redteam
+    } else {
+        attach.egress.unwrap_or_default()
+    };
     let samples = canonical_samples(attach.samples.as_deref())?;
 
     // The image is named before anything is reclaimed, because reclamation takes away
@@ -182,6 +205,7 @@ async fn create(host: &Host, attach: &cli::Attach) -> Result<Session> {
         work_dir: layout.work_dir.clone(),
         samples,
         egress,
+        redteam: attach.redteam,
         identity_file: key.identity_file().to_path_buf(),
         created_at: now,
         last_used: now,

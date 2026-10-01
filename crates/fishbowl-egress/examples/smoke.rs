@@ -34,6 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None | Some("auto") => Mode::Auto,
         Some("warp") => Mode::Warp,
         Some("tor") => Mode::Tor,
+        Some("redteam") => Mode::Redteam,
         Some("direct") => Mode::Direct,
         Some(other) => panic!("unknown egress mode `{other}`"),
     };
@@ -67,7 +68,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // connection come in through its own tunnel. Over Tor the probe goes elsewhere —
     // Cloudflare's edge drops Tor exits outright.
     let target = match mode {
-        Mode::Tor => ("detectportal.firefox.com", "/"),
+        // `redteam` prefers Tor — probe somewhere an exit can reach; if it fell back
+        // to WARP the same probe still answers.
+        Mode::Tor | Mode::Redteam => ("detectportal.firefox.com", "/"),
         _ => ("www.cloudflare.com", "/cdn-cgi/trace"),
     };
     match http_trace(&egress, target).await {

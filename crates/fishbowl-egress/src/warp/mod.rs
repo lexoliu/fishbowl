@@ -17,7 +17,6 @@ use std::{
     net::SocketAddr,
     net::SocketAddrV4,
     path::Path,
-    path::PathBuf,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::Duration,
 };
@@ -28,11 +27,10 @@ use smoltcp::{
 };
 use thiserror::Error;
 use tokio::{
-    sync::{Notify, mpsc, oneshot, watch},
+    sync::{Notify, mpsc, oneshot},
     task::JoinHandle,
 };
 
-use crate::{Link, Transport};
 use registration::RegistrationError;
 use sockets::Death;
 
@@ -58,68 +56,16 @@ pub enum Error {
     Io(#[from] io::Error),
 }
 
-/// Raises and re-raises the WARP tunnel, publishing its state to `link`.
-///
-/// The supervisor never returns: a raised tunnel is run by its driver task until it
-/// dies, at which point the supervisor waits out a backoff and tries the handshake
-/// again. The device registration is reused — it survives restarts by design.
-pub(super) async fn supervise(
-    state_dir: PathBuf,
-    resolver: SocketAddrV4,
-    link: watch::Sender<Link>,
-) {
-    let mut backoff = Duration::from_secs(5);
-    let mut last_failure: Option<Arc<str>> = None;
-    loop {
-        let _ = link.send(match &last_failure {
-            // A first attempt asks connections to wait; a retry must not — modes that
-            // allow fallback keep going direct on the last verdict while this runs.
-            Some(reason) => Link::Retrying(Arc::clone(reason)),
-            None => Link::Connecting,
-        });
-        match establish(&state_dir, resolver).await {
-            Ok((stack, driver)) => {
-                backoff = Duration::from_secs(5);
-                tracing::info!(endpoint = %stack.endpoint(), "the WARP tunnel is up");
-                let _ = link.send(Link::Up(Transport::Warp(stack)));
-                match driver.await {
-                    Ok(Ok(())) => tracing::info!("the WARP tunnel closed"),
-                    Ok(Err(error)) => {
-                        tracing::warn!(%error, "the WARP tunnel died");
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, "the WARP driver task failed");
-                    }
-                }
-                // Publish the death now, not after the backoff: the link still says `Up`
-                // otherwise, and the audit trail would show `warp` for a route that is
-                // already refusing connections.
-                let reason: Arc<str> = Arc::from("the tunnel went down");
-                last_failure = Some(Arc::clone(&reason));
-                let _ = link.send(Link::Unavailable(reason));
-            }
-            Err(error) => {
-                tracing::warn!(%error, "WARP is unavailable");
-                let reason: Arc<str> = Arc::from(error.to_string());
-                last_failure = Some(Arc::clone(&reason));
-                let _ = link.send(Link::Unavailable(reason));
-            }
-        }
-        tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(Duration::from_secs(60));
-    }
-}
-
 /// Builds one tunnel and waits for its handshake.
 ///
 /// The returned join handle is the driver's lifetime: when it finishes — on error or on
 /// every [`Stack`] handle being dropped — the tunnel is dead and the supervisor should
-/// try again.
+/// try again. The device registration is reused — it survives restarts by design.
 ///
 /// # Errors
 /// Fails when the device cannot be registered or the handshake does not complete in
 /// [`HANDSHAKE_TIMEOUT`].
-async fn establish(
+pub(super) async fn establish(
     state_dir: &Path,
     resolver: SocketAddrV4,
 ) -> Result<(Stack, JoinHandle<io::Result<()>>), Error> {
@@ -135,7 +81,6 @@ async fn establish(
     let (requests, receive) = mpsc::channel::<driver::Request>(64);
     let (established, became_up) = oneshot::channel::<()>();
 
-    let endpoint = device.endpoint;
     let driver = driver::Driver::new(
         &device,
         udp,
@@ -154,7 +99,6 @@ async fn establish(
         wake,
         retired,
         dead: death,
-        endpoint,
     };
 
     if !matches!(
@@ -183,15 +127,9 @@ pub struct Stack {
     retired: Arc<Mutex<Vec<SocketHandle>>>,
     /// The death notice shared by every socket this stack hands out.
     dead: Arc<Death>,
-    endpoint: SocketAddrV4,
 }
 
 impl Stack {
-    /// Where the tunnel's `WireGuard` datagrams go.
-    pub fn endpoint(&self) -> SocketAddrV4 {
-        self.endpoint
-    }
-
     /// Whether the driver is still alive.
     fn check_alive(&self) -> io::Result<()> {
         self.dead.reason().map_or(Ok(()), |reason| {

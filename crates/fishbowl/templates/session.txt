@@ -1,7 +1,8 @@
 {% if created %}session {{ id }} is ready{% else %}session {{ id }} is back{% endif %}.
 
   image      {{ image }} ({{ arch }})
-  samples    {{ samples }}
+{% if redteam %}  posture    red team — authorization attested
+{% endif %}  samples    {{ samples }}
   work       {{ work_dir }}
   keys       {{ keys }}
 

@@ -16,6 +16,7 @@ mod loan;
 mod pick;
 mod provision;
 mod reclaim;
+mod redteam;
 mod session;
 
 use anyhow::Result;

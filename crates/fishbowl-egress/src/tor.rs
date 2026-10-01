@@ -8,7 +8,7 @@
 use std::{
     io,
     net::{SocketAddr, SocketAddrV4},
-    path::{Path, PathBuf},
+    path::Path,
     sync::Arc,
     time::Duration,
 };
@@ -17,13 +17,8 @@ use arti_client::{
     DangerouslyIntoTorAddr, StreamPrefs, TorAddr, TorClient,
     config::{ConfigBuildError, TorClientConfigBuilder},
 };
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    sync::watch,
-};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tor_rtcompat::PreferredRuntime;
-
-use crate::{Link, Transport};
 
 /// One DNS exchange attempt may take this long through a circuit — long enough for a
 /// fresh circuit's build plus the exchange, short enough that a dead stream moves on
@@ -153,7 +148,10 @@ impl Tor {
 }
 
 /// Bootstraps Arti with its cache and state under `state_dir/tor`.
-async fn establish(state_dir: &Path) -> Result<Tor, Error> {
+///
+/// The returned client keeps its own circuits alive — there is no driver to watch, so
+/// the supervisor's job ends at publishing it.
+pub(super) async fn establish(state_dir: &Path) -> Result<Tor, Error> {
     let directory = state_dir.join("tor");
     let state = directory.join("state");
     let cache = directory.join("cache");
@@ -178,36 +176,6 @@ async fn establish(state_dir: &Path) -> Result<Tor, Error> {
             ))
         })??;
     Ok(Tor { client })
-}
-
-/// Bootstraps Tor, publishing `Connecting`/`Up`/`Unavailable` as attempts resolve.
-///
-/// Once `Up` is published the supervisor's job is done — Arti keeps itself alive for as
-/// long as the published handle is held.
-pub(super) async fn supervise(state_dir: PathBuf, link: watch::Sender<Link>) {
-    let mut backoff = Duration::from_secs(5);
-    let mut last_failure: Option<Arc<str>> = None;
-    loop {
-        let _ = link.send(match &last_failure {
-            Some(reason) => Link::Retrying(Arc::clone(reason)),
-            None => Link::Connecting,
-        });
-        match establish(&state_dir).await {
-            Ok(tor) => {
-                tracing::info!("the Tor client is bootstrapped");
-                let _ = link.send(Link::Up(Transport::Tor(tor)));
-                return;
-            }
-            Err(error) => {
-                tracing::warn!(%error, "Tor is unavailable");
-                let reason: Arc<str> = Arc::from(error.to_string());
-                last_failure = Some(Arc::clone(&reason));
-                let _ = link.send(Link::Unavailable(reason));
-            }
-        }
-        tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(Duration::from_secs(60));
-    }
 }
 
 /// Why Tor could not be raised.
