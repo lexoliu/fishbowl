@@ -186,7 +186,7 @@ pub enum BlockReason {
     NoHandler,
     /// The upstream connection failed and the gateway reported it as refused.
     UpstreamUnreachable,
-    /// The egress transport the session's policy requires is down, so the connection
-    /// was refused rather than let out unaudited.
+    /// The egress transport the session's policy requires is down, so the request was
+    /// refused rather than let out unaudited.
     EgressUnavailable,
 }

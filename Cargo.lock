@@ -1673,6 +1673,7 @@ dependencies = [
  "tokio-rustls",
  "tor-rtcompat",
  "tracing",
+ "tracing-subscriber",
  "webpki-roots",
 ]
 

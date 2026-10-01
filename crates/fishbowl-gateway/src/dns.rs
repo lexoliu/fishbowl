@@ -10,7 +10,7 @@ use std::{
     time::Instant,
 };
 
-use fishbowl_audit::{AuditEvent, DnsAnswer, DnsQuery, Endpoint};
+use fishbowl_audit::{AuditEvent, BlockReason, Blocked, DnsAnswer, DnsQuery, Endpoint, Transport};
 use fishbowl_egress::Egress;
 use hickory_proto::op::Message;
 use tokio::{net::UdpSocket, time::Duration};
@@ -80,16 +80,34 @@ async fn resolve(
 
     // The exchange crosses whatever route connections cross: a query that went around
     // the session's tunnel would name the machine it came from.
-    let answer = tokio::time::timeout(UPSTREAM_TIMEOUT, egress.dns_exchange(upstream, &query))
+    let exchanged = tokio::time::timeout(UPSTREAM_TIMEOUT, egress.dns_exchange(upstream, &query))
         .await
         .map_err(|_| GatewayError::Socket {
             context: "waiting for the upstream resolver",
             source: std::io::Error::from(std::io::ErrorKind::TimedOut),
-        })?
-        .map_err(|source| GatewayError::Socket {
-            context: "exchanging a DNS query with the upstream resolver",
-            source,
         })?;
+    let answer = match exchanged {
+        Ok(answer) => answer,
+        Err(source) => {
+            // A refused exchange is as much evidence as a refused connection: under a
+            // strict egress mode it is the policy, not the resolver, answering.
+            if source.kind() == std::io::ErrorKind::ConnectionAborted {
+                sink.record(AuditEvent::Blocked(Blocked {
+                    transport: Transport::Udp,
+                    destination: Endpoint {
+                        ip: (*upstream.ip()).into(),
+                        port: upstream.port(),
+                    },
+                    reason: BlockReason::EgressUnavailable,
+                }))
+                .await;
+            }
+            return Err(GatewayError::Socket {
+                context: "exchanging a DNS query with the upstream resolver",
+                source,
+            });
+        }
+    };
     let answer = answer.as_slice();
 
     socket

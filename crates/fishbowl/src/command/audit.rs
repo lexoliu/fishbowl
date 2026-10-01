@@ -155,7 +155,7 @@ const fn reason(reason: BlockReason) -> &'static str {
         BlockReason::NoHandler => "no transparent handler for the destination port",
         BlockReason::UpstreamUnreachable => "the upstream connection failed",
         BlockReason::EgressUnavailable => {
-            "the required egress transport is down; the connection was refused"
+            "the required egress transport is down; the request was refused"
         }
     }
 }
