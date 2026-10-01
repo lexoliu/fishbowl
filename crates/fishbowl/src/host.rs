@@ -79,7 +79,7 @@ impl Host {
             .list()
             .await
             .context("asking the runtime what it is already running")?;
-        HostBudget::measure(Path::new(&status.app_root), Committed::of(&running))
+        HostBudget::measure(Path::new(&status.paths.app_root), Committed::of(&running))
             .map_err(Into::into)
     }
 

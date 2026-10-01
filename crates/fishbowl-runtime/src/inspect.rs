@@ -17,8 +17,14 @@ use crate::{
 pub struct SystemStatus {
     /// Whether the API server is running.
     pub status: String,
-    /// Version banner reported by the API server.
-    pub api_server_version: String,
+    /// Where the runtime keeps its files.
+    pub paths: SystemPaths,
+}
+
+/// The part of `system status` that locates the runtime's directories.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemPaths {
     /// Directory holding runtime state, kernels and images.
     pub app_root: String,
 }

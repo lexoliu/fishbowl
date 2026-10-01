@@ -1,9 +1,29 @@
 {
-  "apiServerAppName": "container-apiserver",
-  "apiServerBuild": "release",
-  "apiServerCommit": "unspecified",
-  "apiServerVersion": "container-apiserver version 1.3.1 (build: release, commit: unspeci)",
-  "appRoot": "/Users/lexoliu/Library/Application Support/com.apple.container/",
-  "installRoot": "/opt/homebrew/Cellar/container/1.3.1/",
+  "client": {
+    "appName": "container",
+    "build": "release",
+    "commit": "unspecified",
+    "version": "1.5.0"
+  },
+  "host": {
+    "architecture": "arm64",
+    "cpus": 12,
+    "operatingSystem": "Version 27.0.1 (Build 26A434)"
+  },
+  "paths": {
+    "appRoot": "/Users/lexoliu/Library/Application Support/com.apple.container/",
+    "installRoot": "/opt/homebrew/Cellar/container/1.5.0/"
+  },
+  "resources": {
+    "containersRunning": 0,
+    "containersTotal": 0,
+    "images": 2
+  },
+  "server": {
+    "appName": "container-apiserver",
+    "build": "release",
+    "commit": "unspecified",
+    "version": "1.5.0"
+  },
   "status": "running"
 }
