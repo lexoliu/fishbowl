@@ -347,7 +347,10 @@ impl Driver {
                     if self.device.inbound.len() < QUEUE_DEPTH {
                         self.device.inbound.push_back(packet.to_vec());
                     }
-                    return Ok(());
+                    // The contract holds here too: a decrypted packet can be followed by
+                    // a datagram the peer asked for — a cookie reply or a keepalive
+                    // answer — which only a further empty call produces.
+                    datagram = &[];
                 }
             }
         }

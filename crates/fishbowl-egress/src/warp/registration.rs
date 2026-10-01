@@ -386,9 +386,10 @@ async fn lookup_v4(name: &str, resolver: SocketAddrV4) -> Result<Ipv4Addr, io::E
     let wire = message.to_vec().map_err(io::Error::other)?;
 
     let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await?;
-    socket.send_to(&wire, resolver).await?;
+    socket.connect(resolver).await?;
+    socket.send(&wire).await?;
     let mut buffer = vec![0_u8; 4096];
-    let (length, _) = tokio::time::timeout(LOOKUP_TIMEOUT, socket.recv_from(&mut buffer)).await??;
+    let length = tokio::time::timeout(LOOKUP_TIMEOUT, socket.recv(&mut buffer)).await??;
     let answer = Message::from_vec(&buffer[..length]).map_err(io::Error::other)?;
     answer
         .answers

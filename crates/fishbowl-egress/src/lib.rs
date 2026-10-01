@@ -493,11 +493,13 @@ impl Routes {
 }
 
 /// One DNS wire exchange over a plain UDP socket — the direct path's resolver traffic.
+/// The socket is connected so only the resolver's datagrams are received.
 async fn direct_dns(resolver: SocketAddrV4, query: &[u8]) -> io::Result<Vec<u8>> {
     let socket = tokio::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0)).await?;
-    socket.send_to(query, resolver).await?;
+    socket.connect(resolver).await?;
+    socket.send(query).await?;
     let mut answer = vec![0_u8; 4096];
-    let (length, _) = socket.recv_from(&mut answer).await?;
+    let length = socket.recv(&mut answer).await?;
     answer.truncate(length);
     Ok(answer)
 }

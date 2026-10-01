@@ -91,7 +91,12 @@ pub(super) async fn supervise(
                         tracing::warn!(%error, "the WARP driver task failed");
                     }
                 }
-                last_failure = Some(Arc::from("the tunnel went down"));
+                // Publish the death now, not after the backoff: the link still says `Up`
+                // otherwise, and the audit trail would show `warp` for a route that is
+                // already refusing connections.
+                let reason: Arc<str> = Arc::from("the tunnel went down");
+                last_failure = Some(Arc::clone(&reason));
+                let _ = link.send(Link::Unavailable(reason));
             }
             Err(error) => {
                 tracing::warn!(%error, "WARP is unavailable");
