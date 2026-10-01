@@ -82,17 +82,38 @@ fn frame() -> String {
         "Proceed only for targets you are authorized to engage.",
     ];
 
-    // `true` centres the row: the skull and the title sit in the middle of the box,
-    // the body stays flush left where prose belongs.
-    let mut rows: Vec<(String, bool)> = SKULL
-        .trim_end()
-        .lines()
-        .map(|line| (line.to_owned(), true))
+    // The skull's leading spaces are its shape — centring each line would fold the
+    // jaw into the cranium. The block is centred as a whole instead: strip the common
+    // margin, then pad every skull line by the same amount.
+    enum Pad {
+        /// Flush left; the line's own leading spaces are the drawing.
+        Skull,
+        /// Centred row (the title).
+        Centre,
+        /// Flush left prose.
+        Left,
+    }
+
+    let skull: Vec<&str> = SKULL.trim_end().lines().collect();
+    let margin = skull
+        .iter()
+        .map(|line| line.len() - line.trim_start().len())
+        .min()
+        .unwrap_or_default();
+    let skull_width = skull
+        .iter()
+        .map(|line| line.chars().count() - margin)
+        .max()
+        .unwrap_or_default();
+
+    let mut rows: Vec<(String, Pad)> = skull
+        .iter()
+        .map(|line| (line[margin..].to_owned(), Pad::Skull))
         .collect();
-    rows.push((String::new(), false));
-    rows.push((TITLE.to_owned(), true));
-    rows.push((String::new(), false));
-    rows.extend(BODY.iter().map(|line| ((*line).to_owned(), false)));
+    rows.push((String::new(), Pad::Left));
+    rows.push((TITLE.to_owned(), Pad::Centre));
+    rows.push((String::new(), Pad::Left));
+    rows.extend(BODY.iter().map(|line| ((*line).to_owned(), Pad::Left)));
 
     let width = rows
         .iter()
@@ -103,19 +124,19 @@ fn frame() -> String {
     let mut frame = String::with_capacity(width * (rows.len() + 2));
     frame.push_str(RED);
     let _ = writeln!(frame, "\n  ╔{inner}╗");
-    for (row, centred) in &rows {
+    for (row, pad) in &rows {
         let slack = width - row.chars().count();
-        let (left, right) = if *centred {
-            (slack.div_ceil(2), slack / 2)
-        } else {
-            (0, slack)
+        let left = match pad {
+            Pad::Skull => (width - skull_width) / 2,
+            Pad::Centre => slack.div_ceil(2),
+            Pad::Left => 0,
         };
         let _ = writeln!(
             frame,
             "  ║  {}{}{}  ║",
             " ".repeat(left),
             row,
-            " ".repeat(right)
+            " ".repeat(slack - left)
         );
     }
     let _ = writeln!(frame, "  ╚{inner}╝\n{RESET}");
@@ -131,7 +152,7 @@ mod tests {
         let frame = frame();
         assert!(frame.starts_with(RED), "the frame is drawn in red");
         assert!(frame.contains("R E D   T E A M   M O D E"));
-        assert!(frame.contains("IIIIII"), "the skull is in the box: {frame}");
+        assert!(frame.contains("$$$$"), "the skull is in the box: {frame}");
         assert!(
             frame.contains("║") && frame.contains("═"),
             "the frame is drawn as a box: {frame}"
