@@ -74,31 +74,49 @@ pub fn attest() -> Result<()> {
 fn frame() -> String {
     const TITLE: &str = "R E D   T E A M   M O D E";
     const BODY: &[&str] = &[
-        "the agent in this session is briefed for offensive work, and",
+        "The agent in this session is briefed for offensive work, and",
         "its egress is forced through an anonymizing transport — Tor",
         "first, WARP when Tor cannot be raised, never the machine's own",
         "address.",
         "",
-        "proceed only for targets you are authorized to engage.",
+        "Proceed only for targets you are authorized to engage.",
     ];
 
-    let mut rows: Vec<String> = SKULL.trim_end().lines().map(ToOwned::to_owned).collect();
-    rows.push(String::new());
-    rows.push(TITLE.to_owned());
-    rows.extend(BODY.iter().map(|line| (*line).to_owned()));
+    // `true` centres the row: the skull and the title sit in the middle of the box,
+    // the body stays flush left where prose belongs.
+    let mut rows: Vec<(String, bool)> = SKULL
+        .trim_end()
+        .lines()
+        .map(|line| (line.to_owned(), true))
+        .collect();
+    rows.push((String::new(), false));
+    rows.push((TITLE.to_owned(), true));
+    rows.push((String::new(), false));
+    rows.extend(BODY.iter().map(|line| ((*line).to_owned(), false)));
 
     let width = rows
         .iter()
-        .map(|row| row.chars().count())
+        .map(|(row, _)| row.chars().count())
         .max()
         .unwrap_or_default();
     let inner = "═".repeat(width + 4);
     let mut frame = String::with_capacity(width * (rows.len() + 2));
     frame.push_str(RED);
     let _ = writeln!(frame, "\n  ╔{inner}╗");
-    for row in &rows {
-        let padding = " ".repeat(width - row.chars().count());
-        let _ = writeln!(frame, "  ║  {row}{padding}  ║");
+    for (row, centred) in &rows {
+        let slack = width - row.chars().count();
+        let (left, right) = if *centred {
+            (slack.div_ceil(2), slack / 2)
+        } else {
+            (0, slack)
+        };
+        let _ = writeln!(
+            frame,
+            "  ║  {}{}{}  ║",
+            " ".repeat(left),
+            row,
+            " ".repeat(right)
+        );
     }
     let _ = writeln!(frame, "  ╚{inner}╝\n{RESET}");
     frame
