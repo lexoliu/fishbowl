@@ -11,13 +11,14 @@ mod budget;
 mod error;
 mod inspect;
 mod spec;
+pub mod toolchain;
 
 pub use apple::{AppleContainer, ExecOutput, ExecStream, ImageBuild};
 pub use budget::{Build, Committed, HostBudget, Reservation, Sandbox, Workload};
 pub use error::RuntimeError;
 pub use inspect::{
     ContainerState, ImageDescription, ImageDigest, ImageInfo, NetworkStatus, Resources, RunState,
-    SystemStatus,
+    ServerInfo, SystemStatus,
 };
 pub use spec::{
     Arch, Capability, ContainerName, ContainerSpec, Cpus, ImageReference, Memory, Mount,

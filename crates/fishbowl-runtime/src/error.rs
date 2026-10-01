@@ -76,6 +76,42 @@ pub enum RuntimeError {
         reason: String,
     },
 
+    /// A helper invoked while provisioning the toolchain exited non-zero.
+    #[error("`{program} {args}` exited with {status}: {stderr}", args = .args.join(" "))]
+    Helper {
+        /// The tool that was run.
+        program: &'static str,
+        /// Arguments it was given.
+        args: Vec<String>,
+        /// Exit status text reported by the OS.
+        status: String,
+        /// What it wrote to stderr.
+        stderr: String,
+    },
+
+    /// A fetched toolchain artifact does not hash to the digest pinned for it.
+    #[error("{name} hashed to sha256:{actual}; this build pins sha256:{expected}")]
+    Digest {
+        /// The artifact that mismatched.
+        name: &'static str,
+        /// The digest this build pins.
+        expected: &'static str,
+        /// What the download actually hashed to.
+        actual: String,
+    },
+
+    /// The toolchain could not be staged or committed on disk.
+    #[error("could not {action} {path}: {source}")]
+    Stage {
+        /// What was being done.
+        action: &'static str,
+        /// Where.
+        path: PathBuf,
+        /// Underlying OS error.
+        #[source]
+        source: std::io::Error,
+    },
+
     /// A value that must satisfy the runtime's naming rules did not.
     #[error("`{value}` is not a valid {kind}: {reason}")]
     InvalidValue {

@@ -9,7 +9,7 @@ use fishbowl_agents::{
     AgentIntegration, key_directory, known_hosts_directory, work_alias_directory,
 };
 use fishbowl_image::SandboxLayout;
-use fishbowl_runtime::{AppleContainer, Committed, ContainerName, HostBudget, RunState};
+use fishbowl_runtime::{AppleContainer, Committed, ContainerName, HostBudget, RunState, toolchain};
 
 use crate::{
     loan::Attachment,
@@ -18,6 +18,11 @@ use crate::{
 
 /// Directory under the user's home holding everything fishbowl owns.
 const STATE_DIRECTORY: &str = ".fishbowl";
+
+/// Environment variable overriding the managed toolchain with an explicit `container`
+/// binary — the escape hatch for driving a runtime this build does not carry, like an
+/// upstream build being tried out.
+const RUNTIME_OVERRIDE: &str = "FISHBOWL_CONTAINER";
 
 /// Everything a command needs to reach both the runtime and the host's own state.
 ///
@@ -34,15 +39,26 @@ pub struct Host {
 impl Host {
     /// Locates the runtime and the host's state directory.
     ///
+    /// The runtime is the toolchain pinned into this build rather than whatever a
+    /// `container` install happens to hold: it is fetched into the state directory on
+    /// first use, so the version driven is always the one the driver was written for.
+    ///
     /// # Errors
-    /// Fails when the home directory is unknown or `container` is not installed.
-    pub fn discover() -> Result<Self> {
+    /// Fails when the home directory is unknown, or when the runtime toolchain is
+    /// absent and cannot be fetched and installed.
+    pub async fn discover() -> Result<Self> {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .context("HOME is not set, so the host's configuration cannot be located")?;
-        let runtime = AppleContainer::discover()?;
+        let state = home.join(STATE_DIRECTORY);
+        let runtime = match std::env::var_os(RUNTIME_OVERRIDE) {
+            Some(binary) => AppleContainer::at(binary),
+            None => toolchain::ensure(&state.join("toolchain"))
+                .await
+                .context("provisioning the container toolchain")?,
+        };
         Ok(Self {
-            state: home.join(STATE_DIRECTORY),
+            state,
             home,
             runtime,
             layout: SandboxLayout::default(),
