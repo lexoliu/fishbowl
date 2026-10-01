@@ -14,7 +14,7 @@ use std::{
 };
 
 use arti_client::{
-    DangerouslyIntoTorAddr, TorClient,
+    DangerouslyIntoTorAddr, StreamPrefs, TorClient,
     config::{ConfigBuildError, TorClientConfigBuilder},
 };
 use tokio::{
@@ -25,8 +25,18 @@ use tor_rtcompat::PreferredRuntime;
 
 use crate::{Link, Transport};
 
-/// One DNS exchange may take this long through a circuit.
-const DNS_TIMEOUT: Duration = Duration::from_secs(15);
+/// One DNS exchange attempt may take this long through a circuit — long enough for a
+/// fresh circuit's build plus the exchange, short enough that a dead stream moves on
+/// to a new exit quickly.
+const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// The whole DNS exchange may take this long across attempts.
+const DNS_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// A failed stream is retried this many times. Each retry rides a circuit no other
+/// stream shares, which is how Arti is coaxed into a fresh exit — the only remedy for
+/// a destination one exit refuses or cannot reach.
+const ATTEMPTS: usize = 5;
 
 /// Bootstrapping a fresh consensus can take minutes on a slow network; an attempt that
 /// outlasts this is declared dead and retried under the supervisor's backoff.
@@ -53,9 +63,25 @@ impl Tor {
                 "{destination} is not a usable Tor destination: {error}"
             ))
         })?;
-        self.client.connect(target).await.map_err(|error| {
-            io::Error::other(format!("Tor could not reach {destination}: {error}"))
-        })
+        let mut last_error = None;
+        for attempt in 0..ATTEMPTS {
+            let result = if attempt == 0 {
+                self.client.connect(target.clone()).await
+            } else {
+                let mut prefs = StreamPrefs::new();
+                prefs.new_isolation_group();
+                self.client.connect_with_prefs(target.clone(), &prefs).await
+            };
+            match result {
+                Ok(stream) => return Ok(stream),
+                Err(error) => last_error = Some(error),
+            }
+        }
+        Err(io::Error::other(
+            last_error
+                .map(|error| format!("Tor could not reach {destination}: {error}"))
+                .unwrap_or_default(),
+        ))
     }
 
     /// Relays one DNS wire message over TCP to `resolver` through an exit node.
@@ -81,12 +107,38 @@ impl Tor {
         resolver: SocketAddrV4,
         query: &[u8],
     ) -> io::Result<Vec<u8>> {
+        // A stream can be accepted by an exit and still die at first use — the exit
+        // itself could not reach the resolver — so the whole exchange is what retries,
+        // and the retry is what carries the per-attempt deadline. Exits that cannot
+        // carry a given port are common enough that a handful of circuits is no rare
+        // case; the attempt count and the outer deadline bound it together.
+        let mut last_error = None;
+        for _ in 0..8 {
+            match tokio::time::timeout(ATTEMPT_TIMEOUT, self.dns_exchange_once(resolver, query))
+                .await
+            {
+                Ok(Ok(answer)) => return Ok(answer),
+                Ok(Err(error)) => last_error = Some(error),
+                Err(_) => {
+                    last_error = Some(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "a circuit did not answer the exchange",
+                    ));
+                }
+            }
+        }
+        Err(last_error
+            .unwrap_or_else(|| io::Error::other("the resolver could not be reached over Tor")))
+    }
+
+    async fn dns_exchange_once(&self, resolver: SocketAddrV4, query: &[u8]) -> io::Result<Vec<u8>> {
         let mut stream = self.connect(SocketAddr::V4(resolver)).await?;
         let length = u16::try_from(query.len()).map_err(|_| {
             io::Error::new(io::ErrorKind::InvalidInput, "the DNS query is oversized")
         })?;
         stream.write_all(&length.to_be_bytes()).await?;
         stream.write_all(query).await?;
+        stream.flush().await?;
 
         let mut length = [0_u8; 2];
         stream.read_exact(&mut length).await?;
