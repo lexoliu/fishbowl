@@ -93,6 +93,17 @@ pub struct Attach {
     /// leak where it ran. Settled when the session is created.
     #[arg(long, value_enum)]
     pub egress: Option<Mode>,
+    /// Open the session as a red team engagement.
+    ///
+    /// Before anything is started, the terminal asks the operator to attest that they
+    /// hold authorization for the targets the session will touch; anything but an
+    /// explicit yes ends the opening. Inside, the agent is briefed for offensive work
+    /// and told the engagement is authorized, and egress is forced through an
+    /// anonymizing transport — Tor first, WARP when Tor cannot be raised, never the
+    /// machine's own address. Settled when the session is created, and attested again
+    /// on every opening of the session it made.
+    #[arg(long, conflicts_with = "egress")]
+    pub redteam: bool,
 }
 
 /// Arguments of `claude`.
@@ -232,6 +243,32 @@ mod tests {
         assert!(
             Cli::try_parse_from(["fishbowl", "audit", "../../etc/passwd"]).is_err(),
             "the identifier becomes a container name and a file name"
+        );
+    }
+
+    #[test]
+    fn redteam_picks_the_egress_itself() {
+        assert!(
+            Cli::try_parse_from(["fishbowl", "claude", "--redteam", "--egress", "tor"]).is_err(),
+            "a red team session's egress is the mode's own — a flag that could weaken \
+             it is refused rather than argued with"
+        );
+        let Command::Claude(claude) = Cli::try_parse_from(["fishbowl", "claude", "--redteam"])
+            .unwrap()
+            .command
+        else {
+            panic!("`claude` parses as `claude`");
+        };
+        assert!(claude.attach.redteam);
+        assert!(claude.attach.egress.is_none());
+    }
+
+    #[test]
+    fn redteam_is_not_an_egress_the_flag_can_be_handed() {
+        assert!(
+            Cli::try_parse_from(["fishbowl", "shell", "--egress", "redteam"]).is_err(),
+            "the composite is reached through `--redteam`, which gates it behind the \
+             attestation"
         );
     }
 }

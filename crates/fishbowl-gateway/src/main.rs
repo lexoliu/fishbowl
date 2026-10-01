@@ -89,13 +89,23 @@ struct Serve {
     ///
     /// `auto` tunnels through Cloudflare WARP when the tunnel can be raised and falls
     /// back to direct egress when it cannot; `warp` and `tor` refuse connections while
-    /// their transport is down rather than emit them under the machine's own address.
-    #[arg(long, value_enum, default_value_t = Mode::Auto)]
+    /// their transport is down rather than emit them under the machine's own address;
+    /// `redteam` prefers Tor, falls back to WARP, and refuses while neither is up.
+    ///
+    /// Parsed by name rather than as a value enum: `redteam` is a mode the host's
+    /// `--egress` does not offer — only a session created as red team names it here.
+    #[arg(long, value_parser = parse_mode, default_value_t = Mode::Auto)]
     egress: Mode,
     /// Directory the egress transports keep what must survive a restart in: the WARP
     /// device registration and Tor's cache.
     #[arg(long)]
     egress_state: PathBuf,
+}
+
+/// Parses `--egress`, accepting every mode the host's record can name — including
+/// `redteam`, which the host's own flag never hands out.
+fn parse_mode(value: &str) -> Result<Mode, fishbowl_egress::NotAMode> {
+    value.parse()
 }
 
 #[tokio::main]

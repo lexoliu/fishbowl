@@ -18,7 +18,7 @@ mod warp;
 use std::{
     io,
     net::{IpAddr, SocketAddr, SocketAddrV4},
-    path::Path,
+    path::{Path, PathBuf},
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -61,17 +61,28 @@ pub enum Mode {
     /// Route egress through the Tor network, and refuse connections while it is
     /// unavailable.
     Tor,
+    /// Route egress through the strongest anonymizing transport that can be raised —
+    /// Tor first, WARP when Tor cannot be — and refuse connections while neither is
+    /// up. A red team session's posture: it must never leak the machine's address.
+    ///
+    /// Not offered as an `--egress` value on the host: the composite is reached
+    /// through `--redteam`, which gates it behind the authorization attestation.
+    /// The gateway accepts it by name, because the session's machine is already
+    /// past that gate by the time the flag is read.
+    #[value(skip)]
+    Redteam,
     /// Take every connection out directly; no tunnel is attempted.
     Direct,
 }
 
 impl Mode {
-    /// The tunnel this mode wants, if it wants one.
-    fn wants(self) -> Option<TransportKind> {
+    /// The transports this mode wants, most preferred first.
+    fn wants(self) -> &'static [TransportKind] {
         match self {
-            Self::Auto | Self::Warp => Some(TransportKind::Warp),
-            Self::Tor => Some(TransportKind::Tor),
-            Self::Direct => None,
+            Self::Auto | Self::Warp => &[TransportKind::Warp],
+            Self::Tor => &[TransportKind::Tor],
+            Self::Redteam => &[TransportKind::Tor, TransportKind::Warp],
+            Self::Direct => &[],
         }
     }
 
@@ -87,16 +98,54 @@ impl std::fmt::Display for Mode {
             Self::Auto => "auto",
             Self::Warp => "warp",
             Self::Tor => "tor",
+            Self::Redteam => "redteam",
             Self::Direct => "direct",
         })
     }
 }
 
+/// A string that names no egress mode.
+#[derive(Debug, thiserror::Error)]
+#[error("`{0}` is not an egress mode; expected one of: auto, warp, tor, redteam, direct")]
+pub struct NotAMode(String);
+
+impl std::str::FromStr for Mode {
+    type Err = NotAMode;
+
+    /// Parses the name [`Display`](std::fmt::Display) writes, including the modes the
+    /// host's `--egress` flag does not offer: the gateway takes the mode by name
+    /// because the session record it reads it from was already settled.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        for mode in [
+            Self::Auto,
+            Self::Warp,
+            Self::Tor,
+            Self::Redteam,
+            Self::Direct,
+        ] {
+            if mode.to_string() == value {
+                return Ok(mode);
+            }
+        }
+        Err(NotAMode(value.to_owned()))
+    }
+}
+
 /// Which tunnel, when a mode wants one.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TransportKind {
     Warp,
     Tor,
+}
+
+impl TransportKind {
+    /// The transport's name in logs, matching the audit trail's route names.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Warp => "warp",
+            Self::Tor => "tor",
+        }
+    }
 }
 
 /// What a connection opened right now would go over.
@@ -313,14 +362,21 @@ impl Egress {
     /// exists, so it is resolved directly rather than through any transport.
     #[must_use]
     pub fn start(mode: Mode, state_dir: &Path, resolver: SocketAddrV4) -> Self {
-        let (sender, link) = watch::channel(match mode.wants() {
-            Some(_) => Link::Connecting,
-            None => Link::Bare,
+        let wants = mode.wants();
+        let (sender, link) = watch::channel(if wants.is_empty() {
+            Link::Bare
+        } else {
+            Link::Connecting
         });
-        let supervisor = match mode.wants() {
-            None => None,
-            Some(TransportKind::Warp) => Some(spawn_warp(state_dir, resolver, sender)),
-            Some(TransportKind::Tor) => Some(spawn_tor(state_dir, sender)),
+        let supervisor = if wants.is_empty() {
+            None
+        } else {
+            Some(tokio::spawn(supervise(
+                state_dir.to_path_buf(),
+                resolver,
+                sender,
+                wants,
+            )))
         };
         Self {
             mode,
@@ -504,32 +560,104 @@ async fn direct_dns(resolver: SocketAddrV4, query: &[u8]) -> io::Result<Vec<u8>>
     Ok(answer)
 }
 
-#[cfg(feature = "warp")]
-fn spawn_warp(
-    state_dir: &Path,
+/// Raises transports in `preference` order, forever, publishing each verdict to `link`.
+///
+/// The list is walked from the top of every round: a composite mode whose fallback
+/// transport dies goes back to its preferred one rather than camping on what is left.
+/// A transport that raises but has no driver — Tor — keeps itself alive for as long
+/// as the published handle is held, so publishing `Up` is the whole of its service.
+async fn supervise(
+    state_dir: PathBuf,
     resolver: SocketAddrV4,
     link: watch::Sender<Link>,
-) -> JoinHandle<()> {
-    tokio::spawn(warp::supervise(state_dir.to_path_buf(), resolver, link))
+    preference: &'static [TransportKind],
+) {
+    let mut backoff = Duration::from_secs(5);
+    let mut last_failure: Option<Arc<str>> = None;
+    loop {
+        for &kind in preference {
+            let _ = link.send(match &last_failure {
+                // A first attempt asks connections to wait; a retry must not — modes
+                // that allow fallback keep going direct on the last verdict while
+                // this runs.
+                Some(reason) => Link::Retrying(Arc::clone(reason)),
+                None => Link::Connecting,
+            });
+            match raise(kind, &state_dir, resolver).await {
+                Ok((transport, driver)) => {
+                    backoff = Duration::from_secs(5);
+                    tracing::info!(transport = kind.name(), "the egress transport is up");
+                    let _ = link.send(Link::Up(transport));
+                    let Some(driver) = driver else { return };
+                    match driver.await {
+                        Ok(Ok(())) => {
+                            tracing::info!(transport = kind.name(), "the egress transport closed");
+                        }
+                        Ok(Err(error)) => tracing::warn!(
+                            transport = kind.name(),
+                            %error,
+                            "the egress transport died"
+                        ),
+                        Err(error) => tracing::warn!(
+                            transport = kind.name(),
+                            %error,
+                            "the egress transport's driver failed"
+                        ),
+                    }
+                    // Publish the death now, not after the backoff: the link still
+                    // says `Up` otherwise, and the audit trail would show a route
+                    // that is already refusing connections.
+                    let reason: Arc<str> = Arc::from("the transport went down");
+                    last_failure = Some(Arc::clone(&reason));
+                    let _ = link.send(Link::Unavailable(reason));
+                    break;
+                }
+                Err(reason) => {
+                    tracing::warn!(
+                        transport = kind.name(),
+                        %reason,
+                        "the egress transport is unavailable"
+                    );
+                    last_failure = Some(Arc::clone(&reason));
+                    let _ = link.send(Link::Unavailable(reason));
+                }
+            }
+        }
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(Duration::from_secs(60));
+    }
 }
 
-#[cfg(not(feature = "warp"))]
-fn spawn_warp(
-    _state_dir: &Path,
-    _resolver: SocketAddrV4,
-    _link: watch::Sender<Link>,
-) -> JoinHandle<()> {
-    unreachable!("the `warp` transport is not compiled in")
-}
-
-#[cfg(feature = "tor")]
-fn spawn_tor(state_dir: &Path, link: watch::Sender<Link>) -> JoinHandle<()> {
-    tokio::spawn(tor::supervise(state_dir.to_path_buf(), link))
-}
-
-#[cfg(not(feature = "tor"))]
-fn spawn_tor(_state_dir: &Path, _link: watch::Sender<Link>) -> JoinHandle<()> {
-    unreachable!("the `tor` transport is not compiled in")
+/// Raises one transport kind. The returned task, when the kind has one, is the
+/// transport's lifetime: its exit means the transport died and must be re-raised.
+#[cfg_attr(
+    not(any(feature = "warp", feature = "tor")),
+    allow(clippy::unused_async)
+)]
+async fn raise(
+    kind: TransportKind,
+    state_dir: &Path,
+    resolver: SocketAddrV4,
+) -> Result<(Transport, Option<JoinHandle<io::Result<()>>>), Arc<str>> {
+    match kind {
+        #[cfg(feature = "warp")]
+        TransportKind::Warp => warp::establish(state_dir, resolver)
+            .await
+            .map(|(stack, driver)| (Transport::Warp(stack), Some(driver)))
+            .map_err(|error| Arc::from(error.to_string())),
+        #[cfg(feature = "tor")]
+        TransportKind::Tor => tor::establish(state_dir)
+            .await
+            .map(|tor| (Transport::Tor(tor), None))
+            .map_err(|error| Arc::from(error.to_string())),
+        // A kind whose feature is off reports as unavailable rather than unreachable:
+        // a mode may list it and still be asked to run on a build without it.
+        #[allow(unreachable_patterns)]
+        _ => {
+            let _ = (state_dir, resolver);
+            Err(Arc::from("the transport is not compiled in"))
+        }
+    }
 }
 
 /// Whether `ip` names a destination a tunnel could carry.
@@ -587,11 +715,43 @@ mod tests {
             ("auto", Mode::Auto),
             ("warp", Mode::Warp),
             ("tor", Mode::Tor),
+            ("redteam", Mode::Redteam),
             ("direct", Mode::Direct),
         ] {
             assert_eq!(mode.to_string(), name);
             assert_eq!(serde_json::to_string(&mode).unwrap(), format!("\"{name}\""));
+            assert_eq!(
+                name.parse::<Mode>().unwrap(),
+                mode,
+                "the gateway parses the mode by the name the record and trail write"
+            );
         }
+        assert!("cloudflare".parse::<Mode>().is_err());
+    }
+
+    #[test]
+    fn the_host_flag_does_not_offer_the_gated_mode() {
+        use clap::ValueEnum as _;
+        assert!(
+            Mode::value_variants()
+                .iter()
+                .all(|mode| *mode != Mode::Redteam),
+            "`redteam` is reached through `--redteam`, which gates it behind the \
+             attestation — it is not a value `--egress` can be handed"
+        );
+    }
+
+    #[test]
+    fn redteam_prefers_tor_and_never_falls_back_to_direct() {
+        assert_eq!(
+            Mode::Redteam.wants(),
+            &[TransportKind::Tor, TransportKind::Warp],
+            "Tor is tried before WARP, every round"
+        );
+        assert!(
+            !Mode::Redteam.permits_fallback(),
+            "a red team session must never leak the machine's own address"
+        );
     }
 
     #[test]
@@ -634,6 +794,11 @@ mod tests {
         assert_eq!(
             route_of(&Link::Retrying(Arc::clone(&reason)), Mode::Tor).0,
             Route::Down
+        );
+        assert_eq!(
+            route_of(&Link::Unavailable(Arc::clone(&reason)), Mode::Redteam).0,
+            Route::Down,
+            "redteam is strict: an unavailable transport is silence, never a direct leak"
         );
         assert_eq!(route_of(&Link::Connecting, Mode::Auto).0, Route::Down);
         assert_eq!(route_of(&Link::Bare, Mode::Direct).0, Route::Direct);

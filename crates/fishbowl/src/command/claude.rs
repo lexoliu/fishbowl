@@ -80,7 +80,7 @@ pub async fn run(host: &Host, arguments: &cli::Claude) -> Result<()> {
         credentials: runtime_dir.join(attachment.credentials_name()),
         directory: record.work_dir.clone(),
         resumed: arguments.attach.resume.is_some(),
-        briefing: Some(handoff.briefing(host.layout())),
+        briefing: Some(handoff.briefing(host.layout(), record.redteam)),
         channel: Briefing::Flag(BRIEF),
         autonomous: &[AUTONOMOUS],
     };

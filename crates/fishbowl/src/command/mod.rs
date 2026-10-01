@@ -32,6 +32,7 @@ struct Banner {
     id: String,
     image: String,
     arch: String,
+    redteam: bool,
     samples: String,
     work_dir: String,
     keys: String,
@@ -56,6 +57,7 @@ pub fn banner(
         id: record.id.to_string(),
         image: record.image.to_string(),
         arch: record.arch.to_string(),
+        redteam: record.redteam,
         samples: record.samples.as_ref().map_or_else(
             || "none mounted".to_owned(),
             |path| {

@@ -111,6 +111,7 @@ mod tests {
             work_dir: PathBuf::from("/work"),
             samples: None,
             egress: fishbowl_egress::Mode::Auto,
+            redteam: false,
             identity_file: PathBuf::from("/keys/id"),
             created_at: Timestamp::now(),
             last_used: Timestamp::now(),

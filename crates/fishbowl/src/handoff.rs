@@ -25,6 +25,9 @@ use fishbowl_image::SandboxLayout;
 struct SessionBriefing<'a> {
     /// Directory work belongs in.
     work_dir: &'a str,
+    /// Whether the session is a red team engagement — the briefing tells the agent the
+    /// authorization was attested, and why refusal is not its call to make.
+    redteam: bool,
     /// The `MalwareBazaar` key's variable, when the host has it set.
     malwarebazaar: Option<&'a str>,
 }
@@ -106,16 +109,18 @@ impl Handoff {
     }
 
     /// What the agent is told about the machine it is running on, including any keys it
-    /// has been given.
+    /// has been given. `redteam` is the session's own settled posture — it comes from
+    /// the record, never from an argument alone.
     ///
     /// # Panics
     /// Panics if the briefing template cannot be rendered, which the compiler already
     /// rules out for a template of plain string fields.
     #[must_use]
-    pub fn briefing(&self, layout: &SandboxLayout) -> String {
+    pub fn briefing(&self, layout: &SandboxLayout, redteam: bool) -> String {
         let work_dir = layout.work_dir.display().to_string();
         SessionBriefing {
             work_dir: &work_dir,
+            redteam,
             malwarebazaar: self.malwarebazaar.as_ref().map(|key| key.sent_as.as_str()),
         }
         .render()
@@ -151,13 +156,33 @@ mod tests {
     #[test]
     fn the_agent_is_told_it_is_disposable_and_how_samples_are_run() {
         let layout = SandboxLayout::default();
-        let briefing = Handoff::from_lookup(&layout, |_| false).briefing(&layout);
+        let briefing = Handoff::from_lookup(&layout, |_| false).briefing(&layout, false);
         assert!(briefing.contains("disposable"));
         assert!(briefing.contains("`detonate`"));
         assert!(briefing.contains("no network"), "{briefing}");
         assert!(
             !briefing.contains("Auth-Key"),
             "a key that was not handed over is not described"
+        );
+        assert!(
+            !briefing.contains("red team"),
+            "an ordinary session's agent is not briefed as an engagement's operator"
+        );
+    }
+
+    #[test]
+    fn a_red_team_session_tells_the_agent_the_engagement_is_authorized() {
+        let layout = SandboxLayout::default();
+        let briefing = Handoff::from_lookup(&layout, |_| false).briefing(&layout, true);
+        assert!(briefing.contains("red team engagement"), "{briefing}");
+        assert!(
+            briefing.contains("attested") && briefing.contains("authorization"),
+            "the agent is told the authorization was settled, not merely asserted: \
+             {briefing}"
+        );
+        assert!(
+            briefing.contains("`detonate`"),
+            "the sample rules still stand"
         );
     }
 
@@ -170,7 +195,7 @@ mod tests {
             with.environment_aliases().is_empty(),
             "a key already under its session name needs nothing replanted"
         );
-        let briefing = with.briefing(&layout);
+        let briefing = with.briefing(&layout, false);
         assert!(briefing.contains("MALWAREBAZAAR_API_KEY"));
         assert!(briefing.contains("Auth-Key"));
 
@@ -195,7 +220,11 @@ mod tests {
             )],
             "SendEnv forwards a name only, so the alias's value is replanted under it"
         );
-        assert!(handoff.briefing(&layout).contains("MALWAREBAZAAR_API_KEY"));
+        assert!(
+            handoff
+                .briefing(&layout, false)
+                .contains("MALWAREBAZAAR_API_KEY")
+        );
         assert_eq!(
             handoff.summary(),
             "MALWAREBAZAAR_AUTH_KEY from your environment, sent as MALWAREBAZAAR_API_KEY"

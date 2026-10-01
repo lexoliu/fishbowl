@@ -137,6 +137,13 @@ pub struct SessionRecord {
     /// do, since their image's gateway has no egress to configure.
     #[serde(default = "egress_before_the_egress_layer")]
     pub egress: Mode,
+    /// Whether the session is a red team engagement: its agent is briefed for
+    /// offensive work, and every opening re-asks the operator's authorization.
+    ///
+    /// Settled when the session is created, like the egress it implies. Records written
+    /// before the mode existed were never attested, so they read as ordinary sessions.
+    #[serde(default)]
+    pub redteam: bool,
     /// Private key the host authenticates with.
     pub identity_file: PathBuf,
     /// When the session was created.
@@ -261,6 +268,7 @@ mod tests {
             work_dir: PathBuf::from("/work"),
             samples: None,
             egress: Mode::Auto,
+            redteam: false,
             identity_file: PathBuf::from("/keys/a3f19c"),
             created_at: Timestamp::now(),
             last_used: Timestamp::now(),

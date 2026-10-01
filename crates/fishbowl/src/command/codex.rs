@@ -84,7 +84,7 @@ pub async fn run(host: &Host, arguments: &cli::Codex) -> Result<()> {
     let work_alias = host.work_alias_of(&record.id).await?;
     let instructions = codex
         .config()
-        .developer_instructions_with(&handoff.briefing(host.layout()))
+        .developer_instructions_with(&handoff.briefing(host.layout(), record.redteam))
         .await
         .context("reading codex's developer instructions")?;
 

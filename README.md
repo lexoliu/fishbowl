@@ -44,6 +44,15 @@ trail. DNS crosses the same route, and destinations no exit could ever reach —
 machine's own network, private and local address space — always go direct, whatever
 the mode.
 
+**Red team mode.** `--redteam` opens a session for an engagement you are authorized
+for. Before anything is started, the terminal asks you to attest that authorization —
+anything but an explicit yes ends the opening, and the attestation is asked again on
+every later opening of the session. Inside, the agent is briefed that the engagement
+is authorized and tasked to operate offensively, and egress is forced through an
+anonymizing transport — Tor first, WARP when Tor cannot be raised, never the machine's
+own address — so a red team session that loses both exits has no network rather than
+an unattributed one. The audit trail still sees everything.
+
 ## Install
 
 ```sh
