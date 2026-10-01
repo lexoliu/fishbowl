@@ -29,6 +29,12 @@ pub struct Dockerfile {
     pub detonate_uid: u32,
     /// Detonation gid.
     pub detonate_gid: u32,
+    /// Torsion account name.
+    pub torsion_user: String,
+    /// Torsion uid.
+    pub torsion_uid: u32,
+    /// Torsion gid.
+    pub torsion_gid: u32,
     /// Gateway account name.
     pub gateway_user: String,
     /// Gateway uid.
@@ -74,6 +80,16 @@ pub struct Detonate {
     pub detonate_user: String,
 }
 
+/// The wrapper a command is put on Tor through.
+#[derive(Debug, Template)]
+#[template(path = "torsion.sh", escape = "none")]
+pub struct Torsion {
+    /// Researcher account name.
+    pub researcher_user: String,
+    /// Torsion account name.
+    pub torsion_user: String,
+}
+
 /// The packet filter policy applied before `CAP_NET_ADMIN` is dropped.
 #[derive(Debug, Template)]
 #[template(path = "egress-policy.sh", escape = "none")]
@@ -82,8 +98,13 @@ pub struct EgressPolicy {
     pub gateway_uid: u32,
     /// Detonation uid, exempted from redirection so its traffic is dropped instead.
     pub detonate_uid: u32,
+    /// Torsion uid, redirected to the dedicated listener so its traffic is Tor or a
+    /// refusal.
+    pub torsion_uid: u32,
     /// Transparent proxy port.
     pub proxy_port: u16,
+    /// Dedicated proxy port the torsion uid's TCP is redirected to.
+    pub torsion_port: u16,
     /// Intercepting resolver port.
     pub dns_port: u16,
     /// Port sshd listens on.
@@ -114,6 +135,10 @@ pub struct Entrypoint {
     pub runtime_dir: String,
     /// Transparent proxy port.
     pub proxy_port: u16,
+    /// Dedicated proxy port the torsion uid's TCP is redirected to.
+    pub torsion_port: u16,
+    /// Torsion uid, which the resolver reads to send that account's DNS over Tor.
+    pub torsion_uid: u32,
     /// Intercepting resolver port.
     pub dns_port: u16,
     /// NFLOG group refused packets are reported on.
@@ -160,6 +185,8 @@ pub struct RenderedImage {
     pub statusline: &'static str,
     /// Contents of the `detonate` wrapper.
     pub detonate: String,
+    /// Contents of the `torsion` wrapper.
+    pub torsion: String,
 }
 
 impl RenderedImage {
@@ -187,6 +214,9 @@ impl RenderedImage {
             detonate_user: layout.detonate.name.clone(),
             detonate_uid: layout.detonate.uid,
             detonate_gid: layout.detonate.gid,
+            torsion_user: layout.torsion.name.clone(),
+            torsion_uid: layout.torsion.uid,
+            torsion_gid: layout.torsion.gid,
             gateway_user: layout.gateway.name.clone(),
             gateway_uid: layout.gateway.uid,
             gateway_gid: layout.gateway.gid,
@@ -204,46 +234,14 @@ impl RenderedImage {
             openssh: OpenSshBuild::required_for(arch),
         }
         .render()?;
-        let egress_policy = EgressPolicy {
-            gateway_uid: layout.gateway.uid,
-            detonate_uid: layout.detonate.uid,
-            proxy_port: layout.proxy_port,
-            dns_port: layout.dns_port,
-            ssh_port: layout.ssh_port,
-            nflog_group: layout.nflog_group,
-        }
-        .render()?;
-        let entrypoint = Entrypoint {
-            gateway_user: layout.gateway.name.clone(),
-            audit_trail: layout.audit_trail().display().to_string(),
-            ca_certificate: layout.ca_certificate().display().to_string(),
-            egress_state: layout.egress_state().display().to_string(),
-            authorized_keys: layout.authorized_keys.display().to_string(),
-            work_dir: layout.work_dir.display().to_string(),
-            researcher_user: layout.researcher.name.clone(),
-            runtime_dir: layout.runtime_dir.display().to_string(),
-            proxy_port: layout.proxy_port,
-            dns_port: layout.dns_port,
-            nflog_group: layout.nflog_group,
-        }
-        .render()?;
-        let sshd_config = SshdConfig {
-            ssh_port: layout.ssh_port,
-            authorized_keys: layout.authorized_keys.display().to_string(),
-            researcher_user: layout.researcher.name.clone(),
-            malwarebazaar_key: layout.malwarebazaar_key.clone(),
-        }
-        .render()?;
-        let sudoers = Sudoers {
-            researcher_user: layout.researcher.name.clone(),
-            detonate_user: layout.detonate.name.clone(),
-        }
-        .render()?;
-        let detonate = Detonate {
-            researcher_user: layout.researcher.name.clone(),
-            detonate_user: layout.detonate.name.clone(),
-        }
-        .render()?;
+        let SandboxFiles {
+            egress_policy,
+            entrypoint,
+            sshd_config,
+            sudoers,
+            detonate,
+            torsion,
+        } = sandbox_files(layout)?;
         let claude_config = serde_json::to_string_pretty(&Configuration::for_layout(layout))
             .expect("the agent configuration is representable as JSON");
         let claude_settings = serde_json::to_string_pretty(&Settings::new())
@@ -264,9 +262,83 @@ impl RenderedImage {
             devin_trusted_workspaces,
             sudoers,
             detonate,
+            torsion,
             statusline: include_str!("../templates/statusline.sh"),
         })
     }
+}
+
+/// The rendered files the sandbox itself boots on — filter policy, init script, sshd
+/// drop-in and the two account-crossing wrappers — everything a template takes from
+/// the layout alone, gathered so `render` reads as one Dockerfile plus one of these.
+struct SandboxFiles {
+    /// Contents of `egress-policy.sh`.
+    egress_policy: String,
+    /// Contents of `entrypoint.sh`.
+    entrypoint: String,
+    /// Contents of `sshd_config`.
+    sshd_config: String,
+    /// Contents of the sudoers drop-in.
+    sudoers: String,
+    /// Contents of the `detonate` wrapper.
+    detonate: String,
+    /// Contents of the `torsion` wrapper.
+    torsion: String,
+}
+
+/// Renders every sandbox-side file from the layout they all share.
+fn sandbox_files(layout: &SandboxLayout) -> Result<SandboxFiles, askama::Error> {
+    Ok(SandboxFiles {
+        egress_policy: EgressPolicy {
+            gateway_uid: layout.gateway.uid,
+            detonate_uid: layout.detonate.uid,
+            torsion_uid: layout.torsion.uid,
+            proxy_port: layout.proxy_port,
+            torsion_port: layout.torsion_port,
+            dns_port: layout.dns_port,
+            ssh_port: layout.ssh_port,
+            nflog_group: layout.nflog_group,
+        }
+        .render()?,
+        entrypoint: Entrypoint {
+            gateway_user: layout.gateway.name.clone(),
+            audit_trail: layout.audit_trail().display().to_string(),
+            ca_certificate: layout.ca_certificate().display().to_string(),
+            egress_state: layout.egress_state().display().to_string(),
+            authorized_keys: layout.authorized_keys.display().to_string(),
+            work_dir: layout.work_dir.display().to_string(),
+            researcher_user: layout.researcher.name.clone(),
+            runtime_dir: layout.runtime_dir.display().to_string(),
+            proxy_port: layout.proxy_port,
+            torsion_port: layout.torsion_port,
+            torsion_uid: layout.torsion.uid,
+            dns_port: layout.dns_port,
+            nflog_group: layout.nflog_group,
+        }
+        .render()?,
+        sshd_config: SshdConfig {
+            ssh_port: layout.ssh_port,
+            authorized_keys: layout.authorized_keys.display().to_string(),
+            researcher_user: layout.researcher.name.clone(),
+            malwarebazaar_key: layout.malwarebazaar_key.clone(),
+        }
+        .render()?,
+        sudoers: Sudoers {
+            researcher_user: layout.researcher.name.clone(),
+            detonate_user: layout.detonate.name.clone(),
+        }
+        .render()?,
+        detonate: Detonate {
+            researcher_user: layout.researcher.name.clone(),
+            detonate_user: layout.detonate.name.clone(),
+        }
+        .render()?,
+        torsion: Torsion {
+            researcher_user: layout.researcher.name.clone(),
+            torsion_user: layout.torsion.name.clone(),
+        }
+        .render()?,
+    })
 }
 
 #[cfg(test)]
@@ -329,6 +401,7 @@ mod tests {
                 "iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",
                 "iptables -A OUTPUT -m owner --uid-owner \"${GATEWAY_UID}\" -j ACCEPT",
                 "iptables -A OUTPUT -p tcp -d 127.0.0.1 --dport \"${PROXY_PORT}\" -j ACCEPT",
+                "iptables -A OUTPUT -p tcp -d 127.0.0.1 --dport \"${TORSION_PORT}\" -j ACCEPT",
                 "iptables -A OUTPUT -p udp -d 127.0.0.1 --dport \"${DNS_PORT}\" -j ACCEPT",
             ],
             "every accept is matched by interface, uid, connection state, or the \
@@ -353,7 +426,9 @@ mod tests {
             .find(r#"--nflog-prefix "fishbowl-forwarded""#)
             .unwrap();
         let permissive_accept = policy[tail..].find("-A OUTPUT -j ACCEPT").unwrap() + tail;
-        let noroute = policy.find("icmp-admin-prohibited").unwrap();
+        // The strict-egress branch's refusal — torsion's unconditional one uses the same
+        // mechanism ahead of the tails, so the search is inside them.
+        let noroute = policy[tail..].find("icmp-admin-prohibited").unwrap() + tail;
         assert!(
             forwarded < permissive_accept && permissive_accept < noroute,
             "a flow is recorded before it is let out, and refusal is the strict-egress \
@@ -369,6 +444,83 @@ mod tests {
             detonate_drop < permissive_accept,
             "detonate's refusal is fixed ahead of every tail"
         );
+    }
+
+    #[test]
+    fn the_torsion_uid_is_tor_or_a_refusal_under_every_tail() {
+        let policy = rendered().egress_policy;
+        // Its TCP is redirected to the dedicated listener before the catch-all claims
+        // it — a rule ordered the other way would silently put wrapped commands on the
+        // base route.
+        let torsion_redirect = policy
+            .find(r#"--uid-owner "${TORSION_UID}" -p tcp"#)
+            .unwrap();
+        let catch_all = policy
+            .find(r#"-A OUTPUT -p tcp -j REDIRECT --to-ports "${PROXY_PORT}""#)
+            .unwrap();
+        assert!(
+            torsion_redirect < catch_all,
+            "the uid's redirect must precede the generic one it would otherwise match"
+        );
+
+        // And whatever of its traffic no redirect can claim is refused ahead of every
+        // tier's tail, on both address families — the permissive tail's blanket accept
+        // must never be this uid's way out onto the machine's own address. The tails
+        // come once per family, so each refusal is measured against its own family's.
+        let v4_tail = policy
+            .find(r#"if [ "${AUDIT}" = "strict" ]; then"#)
+            .unwrap();
+        let v6_tail = policy
+            .rfind(r#"if [ "${AUDIT}" = "strict" ]; then"#)
+            .unwrap();
+        let v4_refuse = policy
+            .find(r#"iptables -A OUTPUT -m owner --uid-owner "${TORSION_UID}""#)
+            .unwrap();
+        let v6_refuse = policy
+            .find(r#"ip6tables -A OUTPUT -m owner --uid-owner "${TORSION_UID}""#)
+            .unwrap();
+        assert!(
+            v4_refuse < v4_tail && v6_refuse < v6_tail,
+            "torsion's refusal is fixed ahead of every tail on both families"
+        );
+        // The detonation uid's v6 refusal sits in the same prelude: under a permissive
+        // tier the v6 tail would otherwise accept it, and a sample must have no
+        // network on any address family.
+        let detonate_v6 = policy
+            .find(r#"ip6tables -A OUTPUT -m owner --uid-owner "${DETONATE_UID}" -j DROP"#)
+            .unwrap();
+        assert!(detonate_v6 < v6_tail);
+    }
+
+    #[test]
+    fn the_torsion_wrapper_is_the_detonate_wrappers_twin_aimed_at_tor() {
+        let rendered = rendered();
+        assert!(
+            rendered
+                .torsion
+                .contains("exec sudo --non-interactive --user torsion --"),
+            "{}",
+            rendered.torsion
+        );
+        assert!(
+            !rendered.torsion.contains("--preserve-env"),
+            "sudo resets the environment, which is what keeps an agent's lent \
+             credentials from travelling to the target inside the wrapped command"
+        );
+        assert!(
+            rendered
+                .dockerfile
+                .contains("COPY torsion.sh /usr/local/bin/torsion")
+                && rendered.dockerfile.contains("useradd --uid 65004"),
+            "{}",
+            rendered.dockerfile
+        );
+        for flag in ["--torsion-port 15001", "--torsion-uid 65004"] {
+            assert!(
+                rendered.entrypoint.contains(flag),
+                "the gateway needs both to serve the leg: {flag}"
+            );
+        }
     }
 
     #[test]

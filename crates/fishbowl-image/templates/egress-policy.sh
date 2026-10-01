@@ -21,11 +21,18 @@
 # and never accepted, under any tier: a detonated sample has no network, because this
 # machine is virtualized, not network-isolated — traffic the gateway would relay is
 # traffic a C2 would really get.
+#
+# The torsion account is the other fixed exception, under every tier and every egress
+# mode: its TCP is redirected to a dedicated listener that rides Tor or refuses, and
+# anything of its that cannot be redirected is refused outright — Tor carries no UDP,
+# and the permissive tail's blanket accept must never become its way out.
 set -euo pipefail
 
 readonly GATEWAY_UID={{ gateway_uid }}
 readonly DETONATE_UID={{ detonate_uid }}
+readonly TORSION_UID={{ torsion_uid }}
 readonly PROXY_PORT={{ proxy_port }}
+readonly TORSION_PORT={{ torsion_port }}
 readonly DNS_PORT={{ dns_port }}
 readonly SSH_PORT={{ ssh_port }}
 readonly NFLOG_GROUP={{ nflog_group }}
@@ -55,6 +62,12 @@ iptables -P FORWARD DROP
 iptables -t nat -A OUTPUT -m owner --uid-owner "${GATEWAY_UID}" -j RETURN
 iptables -t nat -A OUTPUT -o lo -j RETURN
 iptables -t nat -A OUTPUT -m owner --uid-owner "${DETONATE_UID}" -j RETURN
+# The torsion uid's TCP is redirected to its own listener before the catch-all claims
+# it — that listener's leg is Tor or a refusal, which is the whole reason the uid
+# exists. Its DNS still lands on the shared resolver port; the gateway reads the uid
+# and resolves it inside Tor.
+iptables -t nat -A OUTPUT -m owner --uid-owner "${TORSION_UID}" -p tcp \
+  -j REDIRECT --to-ports "${TORSION_PORT}"
 iptables -t nat -A OUTPUT -p tcp -j REDIRECT --to-ports "${PROXY_PORT}"
 iptables -t nat -A OUTPUT -p udp --dport 53 -j REDIRECT --to-ports "${DNS_PORT}"
 
@@ -72,9 +85,18 @@ iptables -A OUTPUT -m owner --uid-owner "${DETONATE_UID}" -j DROP
 # The redirection above rewrote these packets' destination to the loopback address, but
 # the outgoing interface this chain sees is still the one the original route chose, so
 # `-o lo` never matches them. They are accepted by the destination the redirection gave
-# them instead, which is exactly the gateway's two ports and nothing else.
+# them instead, which is exactly the gateway's three ports and nothing else.
 iptables -A OUTPUT -p tcp -d 127.0.0.1 --dport "${PROXY_PORT}" -j ACCEPT
+iptables -A OUTPUT -p tcp -d 127.0.0.1 --dport "${TORSION_PORT}" -j ACCEPT
 iptables -A OUTPUT -p udp -d 127.0.0.1 --dport "${DNS_PORT}" -j ACCEPT
+
+# What the torsion uid still owns after the redirects is traffic the Tor leg cannot
+# carry — UDP that is not DNS, raw sockets. It is refused here rather than by the tail,
+# so that every tier's tail can relax without this exception loosening with it.
+iptables -A OUTPUT -m owner --uid-owner "${TORSION_UID}" -j NFLOG \
+  --nflog-group "${NFLOG_GROUP}" --nflog-prefix "fishbowl-noroute"
+iptables -A OUTPUT -m owner --uid-owner "${TORSION_UID}" \
+  -j REJECT --reject-with icmp-admin-prohibited
 
 if [ "${AUDIT}" = "strict" ]; then
   # Traffic the redirection did not claim has no audited path and must not have an
@@ -104,32 +126,37 @@ fi
 ip6tables -F
 ip6tables -X || true
 
+ip6tables -P INPUT DROP
+ip6tables -P FORWARD DROP
+ip6tables -P OUTPUT DROP
+ip6tables -A INPUT -i lo -j ACCEPT
+ip6tables -A OUTPUT -o lo -j ACCEPT
+
+# The two accounts whose exceptions cannot ride a permissive tail hold on v6 too: a
+# sample has no network on any address family, and the torsion leg carries nothing
+# but the TCP Tor can carry. Refused, not dropped, so a wrapped command falls back
+# to v4 fast instead of waiting out a timeout.
+ip6tables -A OUTPUT -m owner --uid-owner "${DETONATE_UID}" -j NFLOG \
+  --nflog-group "${NFLOG_GROUP}" --nflog-prefix "fishbowl-blocked6"
+ip6tables -A OUTPUT -m owner --uid-owner "${DETONATE_UID}" -j DROP
+ip6tables -A OUTPUT -m owner --uid-owner "${TORSION_UID}" -j NFLOG \
+  --nflog-group "${NFLOG_GROUP}" --nflog-prefix "fishbowl-noroute6"
+ip6tables -A OUTPUT -m owner --uid-owner "${TORSION_UID}" \
+  -j REJECT --reject-with icmp6-adm-prohibited
+
 if [ "${AUDIT}" = "strict" ]; then
   # IPv6 has no audited path at all, so it is refused outright rather than left open.
-  ip6tables -P INPUT DROP
-  ip6tables -P FORWARD DROP
-  ip6tables -P OUTPUT DROP
-  ip6tables -A INPUT -i lo -j ACCEPT
-  ip6tables -A OUTPUT -o lo -j ACCEPT
   ip6tables -A OUTPUT -j NFLOG --nflog-group "${NFLOG_GROUP}" \
     --nflog-prefix "fishbowl-blocked6"
   ip6tables -A OUTPUT -j DROP
 elif [ "${EGRESS}" = "auto" ] || [ "${EGRESS}" = "direct" ]; then
-  ip6tables -P INPUT DROP
-  ip6tables -P FORWARD DROP
-  ip6tables -A INPUT -i lo -j ACCEPT
   ip6tables -A INPUT -p icmpv6 -j ACCEPT
   ip6tables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-  ip6tables -A OUTPUT -o lo -j ACCEPT
   ip6tables -A OUTPUT -m conntrack --ctstate NEW -j NFLOG \
     --nflog-group "${NFLOG_GROUP}" --nflog-prefix "fishbowl-forwarded6"
   ip6tables -A OUTPUT -j ACCEPT
 else
-  ip6tables -P INPUT DROP
-  ip6tables -P FORWARD DROP
-  ip6tables -A INPUT -i lo -j ACCEPT
   ip6tables -A INPUT -p icmpv6 -j ACCEPT
-  ip6tables -A OUTPUT -o lo -j ACCEPT
   ip6tables -A OUTPUT -j NFLOG --nflog-group "${NFLOG_GROUP}" \
     --nflog-prefix "fishbowl-noroute6"
   ip6tables -A OUTPUT -j REJECT --reject-with icmp6-adm-prohibited

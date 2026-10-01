@@ -61,9 +61,12 @@ pub enum Mode {
     /// Route egress through the Tor network, and refuse connections while it is
     /// unavailable.
     Tor,
-    /// Route egress through the strongest anonymizing transport that can be raised —
-    /// Tor first, WARP when Tor cannot be — and refuse connections while neither is
-    /// up. A red team session's posture: it must never leak the machine's address.
+    /// Route egress through Cloudflare WARP — strict, never direct — and raise a
+    /// second, parallel Tor leg for the connections that ask for it: the `torsion`
+    /// account's traffic is redirected to a dedicated listener that carries Tor or
+    /// nothing. A red team session's posture: the agent's own control traffic rides
+    /// the WARP exit, which is not the machine's address, and anything a command
+    /// deliberately wraps rides Tor — never the other way around.
     ///
     /// Not offered as an `--egress` value on the host: the composite is reached
     /// through `--redteam`, which gates it behind the authorization attestation.
@@ -76,13 +79,23 @@ pub enum Mode {
 }
 
 impl Mode {
-    /// The transports this mode wants, most preferred first.
+    /// The transports this mode wants for the main route, most preferred first.
     fn wants(self) -> &'static [TransportKind] {
         match self {
-            Self::Auto | Self::Warp => &[TransportKind::Warp],
+            // `auto` and `warp` want WARP because it is the mode; `redteam` wants it
+            // because WARP is the floor — its Tor is the per-command leg instead.
+            Self::Auto | Self::Warp | Self::Redteam => &[TransportKind::Warp],
             Self::Tor => &[TransportKind::Tor],
-            Self::Redteam => &[TransportKind::Tor, TransportKind::Warp],
             Self::Direct => &[],
+        }
+    }
+
+    /// The transports this mode raises alongside the main route for the `torsion`
+    /// leg — the dedicated uid whose every connection is Tor or a refusal.
+    fn torsion_wants(self) -> &'static [TransportKind] {
+        match self {
+            Self::Redteam => &[TransportKind::Tor],
+            _ => &[],
         }
     }
 
@@ -338,20 +351,27 @@ impl AsyncWrite for Upstream {
     }
 }
 
-/// The egress layer of one sandbox: the mode it was given and whatever transport the
-/// supervisor has managed to raise for it.
+/// The egress layer of one sandbox: the mode it was given and whatever transports the
+/// supervisors have managed to raise for it.
 ///
-/// Connections do not consult the supervisor themselves — [`Self::connect`] resolves the
-/// state the supervisor last published and waits out a first in-flight attempt, so a
+/// Connections do not consult the supervisors themselves — [`Self::connect`] resolves the
+/// state a supervisor last published and waits out a first in-flight attempt, so a
 /// tunnel that takes a moment to raise holds connections briefly rather than leaking
 /// them direct.
+///
+/// A mode can carry two legs at once: the main route every redirected connection falls
+/// to, and — for `redteam` — a parallel Tor leg serving only the `torsion` uid, so a
+/// command wrapped to run as that account is Tor or a refusal while the rest of the
+/// machine rides the base route.
 pub struct Egress {
     mode: Mode,
     link: watch::Receiver<Link>,
-    /// Keeps the supervisor alive; dropping the egress layer drops the tunnel with it.
-    /// The handle is never awaited: the supervisor only stops when this does.
+    /// The `torsion` leg's link, when the mode raises one; `None` for every other mode.
+    torsion: Option<watch::Receiver<Link>>,
+    /// Keeps the supervisors alive; dropping the egress layer drops the tunnels with it.
+    /// The handles are never awaited: a supervisor only stops when this does.
     #[allow(dead_code)]
-    supervisor: Option<JoinHandle<()>>,
+    supervisors: Vec<JoinHandle<()>>,
 }
 
 /// How long a connection waits for a transport attempt to succeed or fail before the
@@ -366,28 +386,43 @@ impl Egress {
     /// WARP device registration and Tor's consensus cache. `resolver` is the DNS server
     /// bootstrap traffic uses — the WARP API's name has to resolve before the tunnel
     /// exists, so it is resolved directly rather than through any transport.
+    ///
+    /// When the mode names a `torsion` leg it is supervised on its own link: the two
+    /// transports raise, fail and retry independently of each other.
     #[must_use]
     pub fn start(mode: Mode, state_dir: &Path, resolver: SocketAddrV4) -> Self {
+        let mut supervisors = Vec::new();
         let wants = mode.wants();
         let (sender, link) = watch::channel(if wants.is_empty() {
             Link::Bare
         } else {
             Link::Connecting
         });
-        let supervisor = if wants.is_empty() {
-            None
-        } else {
-            Some(tokio::spawn(supervise(
+        if !wants.is_empty() {
+            supervisors.push(tokio::spawn(supervise(
                 state_dir.to_path_buf(),
                 resolver,
                 sender,
                 wants,
-            )))
+            )));
+        }
+        let torsion = if mode.torsion_wants().is_empty() {
+            None
+        } else {
+            let (sender, link) = watch::channel(Link::Connecting);
+            supervisors.push(tokio::spawn(supervise(
+                state_dir.join("torsion"),
+                resolver,
+                sender,
+                mode.torsion_wants(),
+            )));
+            Some(link)
         };
         Self {
             mode,
             link,
-            supervisor,
+            torsion,
+            supervisors,
         }
     }
 
@@ -404,102 +439,191 @@ impl Egress {
         }
     }
 
-    /// Opens a connection to `destination` on the route `mode` currently allows.
+    /// The `torsion` leg's route over time, when the mode raises one.
+    ///
+    /// Reported under its own leg name in the audit trail so the base route's record —
+    /// the one provisioning proves enforcement by — is never a Tor-only observation.
+    #[must_use]
+    pub fn torsion_routes(&self) -> Option<Routes> {
+        self.torsion.as_ref().map(|link| Routes {
+            link: link.clone(),
+            mode: self.mode,
+        })
+    }
+
+    /// Opens a connection to `destination` on the route `mode` currently allows `leg`
+    /// to take.
     ///
     /// # Errors
     /// Fails when the destination cannot be reached, or when the mode demands a tunnel
-    /// and none could be raised.
-    pub async fn connect(&self, destination: SocketAddr) -> io::Result<Upstream> {
+    /// and none could be raised — for the `torsion` leg, that means refusing whenever
+    /// Tor is not carrying it.
+    pub async fn connect(&self, destination: SocketAddr, leg: Leg) -> io::Result<Upstream> {
         if !is_public(destination.ip()) {
             return TcpStream::connect(destination).await.map(Upstream::Direct);
         }
-        match self.transport().await {
+        match self.verdict(leg).await {
             Verdict::Up(transport) => transport.connect(destination).await,
-            Verdict::Unavailable(reason) if self.mode.permits_fallback() => {
+            Verdict::Unavailable(reason) if self.permits_fallback(leg) => {
                 tracing::debug!(%destination, %reason, "egress tunnel is unavailable; going direct");
                 TcpStream::connect(destination).await.map(Upstream::Direct)
             }
             Verdict::Unavailable(reason) => Err(io::Error::new(
                 io::ErrorKind::ConnectionAborted,
-                format!("{} egress is unavailable: {reason}", self.mode),
+                format!("{} egress is unavailable: {reason}", leg.label(self.mode)),
             )),
         }
     }
 
-    /// Relays one DNS wire message to `resolver` on the current route.
+    /// Relays one DNS wire message to `resolver` on the route `leg` rides.
     ///
-    /// The message crosses whatever connections cross: a tunnel carries queries just as
-    /// it carries streams, because a query that went around the tunnel would name the
-    /// machine it came from.
+    /// The message crosses whatever connections on the same leg cross: a query that
+    /// went around the leg's tunnel would name the machine it came from — and for
+    /// `torsion`, would announce the target to the base route's resolver before the
+    /// traffic it names had even started.
     ///
     /// # Errors
-    /// Fails when the resolver does not answer or the required transport is down.
-    pub async fn dns_exchange(&self, resolver: SocketAddrV4, query: &[u8]) -> io::Result<Vec<u8>> {
+    /// Fails when the resolver does not answer or the leg's required transport is down.
+    pub async fn dns_exchange(
+        &self,
+        resolver: SocketAddrV4,
+        query: &[u8],
+        leg: Leg,
+    ) -> io::Result<Vec<u8>> {
         if !is_public((*resolver.ip()).into()) {
             return direct_dns(resolver, query).await;
         }
-        match self.transport().await {
+        match self.verdict(leg).await {
             Verdict::Up(transport) => transport.dns_exchange(resolver, query).await,
-            Verdict::Unavailable(reason) if self.mode.permits_fallback() => {
+            Verdict::Unavailable(reason) if self.permits_fallback(leg) => {
                 tracing::debug!(%resolver, %reason, "egress tunnel is unavailable; DNS goes direct");
                 direct_dns(resolver, query).await
             }
             Verdict::Unavailable(reason) => Err(io::Error::new(
                 io::ErrorKind::ConnectionAborted,
-                format!("{} egress is unavailable: {reason}", self.mode),
+                format!("{} egress is unavailable: {reason}", leg.label(self.mode)),
             )),
         }
     }
 
-    /// The transport the supervisor currently offers, waiting out an in-flight attempt.
+    /// What the supervisor currently offers `leg`.
     ///
-    /// A *retrying* supervisor does not hold connections in a mode that permits
-    /// fallback: the last verdict stands until the retry overturns it.
-    async fn transport(&self) -> Verdict {
-        /// One read of the link, reduced to what the wait loop does with it.
-        enum Now {
-            /// A verdict is in.
-            Done(Verdict),
-            /// The link's last failure reason, to hand out if the wait ends badly.
-            Pending(Option<Arc<str>>),
+    /// The base leg reads the main link and honours the mode's fallback; the `torsion`
+    /// leg reads its dedicated link — or, under `tor` mode where the main link already
+    /// is Tor, that link — and never permits a fallback: a command wrapped to run on
+    /// Tor is Tor or a refusal.
+    async fn verdict(&self, leg: Leg) -> Verdict {
+        match leg {
+            Leg::Base => wait_for(&self.link, self.mode.permits_fallback()).await,
+            Leg::Torsion => match self.torsion.as_ref().or(if self.mode == Mode::Tor {
+                Some(&self.link)
+            } else {
+                None
+            }) {
+                Some(link) => wait_for(link, false).await,
+                None => Verdict::Unavailable(Arc::from("this session's egress raises no Tor leg")),
+            },
         }
+    }
 
-        let mut link = self.link.clone();
-        let waited = tokio::time::timeout(TRANSPORT_GRACE, async {
-            loop {
-                // The Ref must be dropped before `changed()` can borrow the receiver
-                // again — so each pass reads the state into `Now` first.
-                let now = match &*link.borrow_and_update() {
-                    Link::Connecting => Now::Pending(None),
-                    Link::Retrying(reason) => Now::Pending(Some(reason.clone())),
-                    Link::Up(transport) => Now::Done(Verdict::Up(transport.clone())),
-                    Link::Unavailable(reason) => Now::Done(Verdict::Unavailable(reason.clone())),
-                    Link::Bare => Now::Done(Verdict::Unavailable(Arc::from(
-                        "no transport is configured",
-                    ))),
-                };
-                match now {
-                    Now::Done(verdict) => return verdict,
-                    // A retry in flight cannot hold a connection that may go direct.
-                    Now::Pending(Some(reason)) if self.mode.permits_fallback() => {
-                        return Verdict::Unavailable(reason);
-                    }
-                    Now::Pending(reason) => {
-                        if link.changed().await.is_err() {
-                            return Verdict::Unavailable(
-                                reason
-                                    .unwrap_or_else(|| Arc::from("the egress supervisor stopped")),
-                            );
-                        }
+    /// Whether a connection on `leg` may go out directly when its transport is down.
+    fn permits_fallback(&self, leg: Leg) -> bool {
+        match leg {
+            Leg::Base => self.mode.permits_fallback(),
+            Leg::Torsion => false,
+        }
+    }
+}
+
+/// Which of the egress's supervised routes a connection or query asks for.
+///
+/// Every redirected connection lands on `Base` — the route the mode's main transports
+/// carry — except the `torsion` uid's, which the packet filter sends to a dedicated
+/// listener that serves only `Torsion`: Tor, or a refusal. The leg is decided by which
+/// listener took the connection, not by anything the connection asks for, so a process
+/// cannot talk its way onto or off it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Leg {
+    /// The base route — what the mode's main transports carry.
+    Base,
+    /// The `torsion` uid's dedicated route: Tor, or a refusal.
+    Torsion,
+}
+
+impl Leg {
+    /// How a refusal names the leg that refused: the mode's name for the base route,
+    /// the leg's own for `torsion`, so an operator can tell which policy spoke.
+    fn label(self, mode: Mode) -> ModeOrTorsion {
+        match self {
+            Self::Base => ModeOrTorsion::Mode(mode),
+            Self::Torsion => ModeOrTorsion::Torsion,
+        }
+    }
+}
+
+/// The name a refusal speaks under — either the session's mode or the torsion leg.
+enum ModeOrTorsion {
+    Mode(Mode),
+    Torsion,
+}
+
+impl std::fmt::Display for ModeOrTorsion {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Mode(mode) => mode.fmt(formatter),
+            Self::Torsion => formatter.write_str("torsion"),
+        }
+    }
+}
+
+/// What a link currently offers a connection, waiting out an in-flight attempt.
+///
+/// `permits_fallback` is the owning mode's: a *retrying* supervisor does not hold
+/// connections in a mode that permits fallback — the last verdict stands until the
+/// retry overturns it — while a strict leg waits out the grace for a verdict.
+async fn wait_for(link: &watch::Receiver<Link>, permits_fallback: bool) -> Verdict {
+    /// One read of the link, reduced to what the wait loop does with it.
+    enum Now {
+        /// A verdict is in.
+        Done(Verdict),
+        /// The link's last failure reason, to hand out if the wait ends badly.
+        Pending(Option<Arc<str>>),
+    }
+
+    let mut link = link.clone();
+    let waited = tokio::time::timeout(TRANSPORT_GRACE, async {
+        loop {
+            // The Ref must be dropped before `changed()` can borrow the receiver
+            // again — so each pass reads the state into `Now` first.
+            let now = match &*link.borrow_and_update() {
+                Link::Connecting => Now::Pending(None),
+                Link::Retrying(reason) => Now::Pending(Some(reason.clone())),
+                Link::Up(transport) => Now::Done(Verdict::Up(transport.clone())),
+                Link::Unavailable(reason) => Now::Done(Verdict::Unavailable(reason.clone())),
+                Link::Bare => Now::Done(Verdict::Unavailable(Arc::from(
+                    "no transport is configured",
+                ))),
+            };
+            match now {
+                Now::Done(verdict) => return verdict,
+                // A retry in flight cannot hold a connection that may go direct.
+                Now::Pending(Some(reason)) if permits_fallback => {
+                    return Verdict::Unavailable(reason);
+                }
+                Now::Pending(reason) => {
+                    if link.changed().await.is_err() {
+                        return Verdict::Unavailable(
+                            reason.unwrap_or_else(|| Arc::from("the egress supervisor stopped")),
+                        );
                     }
                 }
             }
-        })
-        .await;
-        waited.unwrap_or_else(|_| {
-            Verdict::Unavailable(Arc::from("the egress transport did not come up in time"))
-        })
-    }
+        }
+    })
+    .await;
+    waited.unwrap_or_else(|_| {
+        Verdict::Unavailable(Arc::from("the egress transport did not come up in time"))
+    })
 }
 
 enum Verdict {
@@ -748,11 +872,20 @@ mod tests {
     }
 
     #[test]
-    fn redteam_prefers_tor_and_never_falls_back_to_direct() {
+    fn redteam_rides_warp_and_raises_tor_as_the_per_command_leg() {
         assert_eq!(
             Mode::Redteam.wants(),
-            &[TransportKind::Tor, TransportKind::Warp],
-            "Tor is tried before WARP, every round"
+            &[TransportKind::Warp],
+            "WARP is the floor every connection falls to — Tor is opt-in per command"
+        );
+        assert_eq!(
+            Mode::Redteam.torsion_wants(),
+            &[TransportKind::Tor],
+            "the torsion uid's dedicated leg is Tor, supervised in parallel"
+        );
+        assert!(
+            Mode::Tor.torsion_wants().is_empty() && Mode::Warp.torsion_wants().is_empty(),
+            "no other mode raises a second leg"
         );
         assert!(
             !Mode::Redteam.permits_fallback(),

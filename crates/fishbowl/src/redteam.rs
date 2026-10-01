@@ -2,10 +2,11 @@
 //!
 //! A `--redteam` session is for targets the operator is authorized to engage: the
 //! agent is briefed for offensive work, and egress is forced through an anonymizing
-//! transport — Tor first, WARP when Tor cannot be raised, never the machine's own
-//! address. That posture's first act on every opening is to ask for the
-//! authorization in the terminal. A refusal, a cancelled prompt and a missing
-//! terminal all fail the same way: nothing is started.
+//! transport — WARP as the strict floor, with a parallel Tor leg a command opts
+//! into through the `torsion` wrapper, never the machine's own address. That
+//! posture's first act on every opening is to ask for the authorization in the
+//! terminal. A refusal, a cancelled prompt and a missing terminal all fail the same
+//! way: nothing is started.
 
 use std::{fmt::Write as _, io::Write as _};
 

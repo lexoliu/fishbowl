@@ -24,10 +24,16 @@ pub struct SandboxLayout {
     pub researcher: Account,
     /// Account sample code is detonated under, which owns nothing worth taking.
     pub detonate: Account,
+    /// Account a command is deliberately run under to force its traffic over Tor —
+    /// the `torsion` wrapper is what crosses a researcher into it.
+    pub torsion: Account,
     /// Account that runs the audit gateway.
     pub gateway: Account,
     /// Loopback port the transparent TCP proxy listens on.
     pub proxy_port: u16,
+    /// Loopback port the `torsion` uid's TCP is redirected to — the dedicated
+    /// listener whose every connection rides Tor or is refused.
+    pub torsion_port: u16,
     /// Loopback port the intercepting DNS resolver listens on.
     pub dns_port: u16,
     /// Port sshd listens on inside the sandbox.
@@ -82,7 +88,16 @@ impl Default for SandboxLayout {
                 uid: 65003,
                 gid: 65003,
             },
+            // The fourth uid the packet filter distinguishes: its traffic is Tor or a
+            // refusal, so a command can be wrapped for anonymity while the agent's own
+            // control traffic keeps riding the base route.
+            torsion: Account {
+                name: "torsion".to_owned(),
+                uid: 65004,
+                gid: 65004,
+            },
             proxy_port: 15000,
+            torsion_port: 15001,
             dns_port: 15353,
             ssh_port: 22,
             nflog_group: 1,

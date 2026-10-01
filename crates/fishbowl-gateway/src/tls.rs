@@ -8,7 +8,7 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use fishbowl_audit::{Endpoint, TlsHandshake};
-use fishbowl_egress::{Egress, Upstream};
+use fishbowl_egress::{Egress, Leg, Upstream};
 use rustls::{ClientConfig, RootCertStore, ServerConfig, pki_types::ServerName};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -57,7 +57,8 @@ impl TlsBridge {
         }
     }
 
-    /// Terminates `sandbox`, connects to `destination`, and reports the handshake.
+    /// Terminates `sandbox`, connects to `destination` over `leg`, and reports the
+    /// handshake.
     ///
     /// # Errors
     /// Fails when either handshake fails, when the destination is unreachable, or when
@@ -68,6 +69,7 @@ impl TlsBridge {
         peer: SocketAddr,
         destination: SocketAddr,
         egress: &Egress,
+        leg: Leg,
     ) -> Result<InterceptedTls<S>>
     where
         S: AsyncRead + AsyncWrite + Unpin,
@@ -98,7 +100,7 @@ impl TlsBridge {
 
         let upstream_tcp =
             egress
-                .connect(destination)
+                .connect(destination, leg)
                 .await
                 .map_err(|source| GatewayError::Socket {
                     context: "connecting to the destination of an intercepted TLS connection",
