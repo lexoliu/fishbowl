@@ -86,7 +86,8 @@ fn event(event: &AuditEvent) -> String {
             query.elapsed_ms
         ),
         AuditEvent::Connect(connect) => format!(
-            "tcp    {} {}up/{}down ({}ms)",
+            "{:<6} {} {}up/{}down ({}ms)",
+            connect.transport,
             destination(&connect.destination, connect.resolved_from.as_deref()),
             connect.bytes_out,
             connect.bytes_in,

@@ -39,12 +39,6 @@ pub enum GatewayError {
         /// Peer address of the redirected connection.
         peer: SocketAddr,
     },
-    /// The gateway only handles IPv4; the egress policy drops IPv6 outright.
-    #[error("connection from {peer} is not IPv4, which the egress policy never permits")]
-    NotIpv4 {
-        /// Peer address of the redirected connection.
-        peer: SocketAddr,
-    },
     /// A DNS message could not be parsed.
     #[error("malformed DNS message")]
     Dns(#[from] hickory_proto::serialize::binary::DecodeError),

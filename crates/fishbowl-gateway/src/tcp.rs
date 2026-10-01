@@ -88,11 +88,8 @@ async fn handle(
     // still in the kernel's table, which is now: the connection is established and the
     // gateway has not yet started relaying it. Under `off` nothing is recorded, so the
     // lookup is skipped rather than wasted.
-    let SocketAddr::V4(source) = peer else {
-        return Err(GatewayError::NotIpv4 { peer });
-    };
     let sink = if sink.records_traffic() {
-        sink.attributed_to(owner_of::<Tcp>(source).await?)
+        sink.attributed_to(owner_of::<Tcp>(peer).await?)
     } else {
         sink
     };
@@ -314,6 +311,7 @@ where
         })?;
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     sink.record(AuditEvent::Connect(Connect {
+        transport: Transport::Tcp,
         destination,
         resolved_from: None,
         bytes_out,

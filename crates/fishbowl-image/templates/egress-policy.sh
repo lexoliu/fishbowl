@@ -7,15 +7,18 @@
 #   FISHBOWL_AUDIT  strict — every packet is redirected to the gateway and audited, or
 #                          logged to NFLOG and dropped; there is no third path, so an
 #                          empty audit trail means the sandbox sent nothing rather
-#                          than that something escaped unrecorded.
-#                   default|off — the proxy is transparent: what a permitted route can
-#                          carry is forwarded (logged to NFLOG as forwarded on its
-#                          first packet), and what no permitted route can carry is
-#                          refused outright with an ICMP error, never left to time
-#                          out in silence.
-#   FISHBOWL_EGRESS auto|direct — the sandbox's own packets may leave directly.
-#                   warp|tor|redteam — only the gateway's packets may leave directly;
-#                          a transport the tunnel cannot carry is refused.
+#                          than that something escaped unrecorded. Non-DNS UDP is not
+#                          captured here: dropping QUIC is what forces the client
+#                          back onto a transport the gateway can audit end to end.
+#                   default|off — the proxy is transparent: TCP is redirected to the
+#                          gateway and all of UDP is TPROXY'd to it — transparently,
+#                          with no address rewritten — and what no permitted route
+#                          can carry is refused outright with an ICMP error, never
+#                          left to time out in silence.
+#   FISHBOWL_EGRESS auto|direct — UDP the relay carries leaves however the egress
+#                          layer chooses, tunnel or direct.
+#                   warp|redteam — UDP is relayed through the tunnel like TCP.
+#                   tor — Tor carries no datagrams, so non-DNS UDP is refused.
 #
 # The detonation account is exempt from all of it — its packets are never redirected
 # and never accepted, under any tier: a detonated sample has no network, because this
@@ -34,6 +37,7 @@ readonly TORSION_UID={{ torsion_uid }}
 readonly PROXY_PORT={{ proxy_port }}
 readonly TORSION_PORT={{ torsion_port }}
 readonly DNS_PORT={{ dns_port }}
+readonly UDP_PORT={{ udp_port }}
 readonly SSH_PORT={{ ssh_port }}
 readonly NFLOG_GROUP={{ nflog_group }}
 
@@ -42,8 +46,10 @@ readonly EGRESS="${FISHBOWL_EGRESS:-auto}"
 
 iptables -F
 iptables -t nat -F
+iptables -t mangle -F
 iptables -X || true
 iptables -t nat -X || true
+iptables -t mangle -X || true
 
 # Inbound: only the SSH control plane the host dials, plus replies to flows we allowed.
 iptables -P INPUT DROP
@@ -70,6 +76,74 @@ iptables -t nat -A OUTPUT -m owner --uid-owner "${TORSION_UID}" -p tcp \
   -j REDIRECT --to-ports "${TORSION_PORT}"
 iptables -t nat -A OUTPUT -p tcp -j REDIRECT --to-ports "${PROXY_PORT}"
 iptables -t nat -A OUTPUT -p udp --dport 53 -j REDIRECT --to-ports "${DNS_PORT}"
+
+# Non-DNS UDP is captured by TPROXY rather than NAT: the mangle table marks each
+# datagram and a policy route delivers it to the loopback stack and the relay's
+# transparent socket, leaving its destination — and conntrack's per-remote reply
+# tuple — intact. A REDIRECT would collapse every flow sharing a client's source
+# port into one reply tuple, and netfilter would drop all but the first before a
+# packet ever reached the relay. The mark also answers the filter: a marked
+# packet still crosses OUTPUT before it is rerouted, and the mark is the reason
+# it must not be refused there.
+readonly TPROXY_MARK=0xfb
+readonly TPROXY_TABLE=101
+
+# xt_TPROXY is the one target a sandbox kernel could plausibly lack, and a
+# failing insert under `set -e` would take the whole policy down with it. Probe
+# with a scratch chain per family: where the target is absent the datagrams are
+# simply never captured, and the tails below govern them like anything else no
+# route can carry.
+UDP_TPROXY4=0
+UDP_TPROXY6=0
+if iptables -t mangle -N fishbowl-probe 2>/dev/null \
+    && iptables -t mangle -A fishbowl-probe -p udp -j TPROXY \
+       --on-ip 127.0.0.1 --on-port "${UDP_PORT}" --tproxy-mark "${TPROXY_MARK}" 2>/dev/null; then
+  UDP_TPROXY4=1
+fi
+iptables -t mangle -F fishbowl-probe 2>/dev/null || true
+iptables -t mangle -X fishbowl-probe 2>/dev/null || true
+if ip6tables -t mangle -N fishbowl-probe 2>/dev/null \
+    && ip6tables -t mangle -A fishbowl-probe -p udp -j TPROXY \
+       --on-ip ::1 --on-port "${UDP_PORT}" --tproxy-mark "${TPROXY_MARK}" 2>/dev/null; then
+  UDP_TPROXY6=1
+fi
+ip6tables -t mangle -F fishbowl-probe 2>/dev/null || true
+ip6tables -t mangle -X fishbowl-probe 2>/dev/null || true
+
+# The capture itself stands only where a route can carry a datagram: the strict
+# tier still drops QUIC rather than let it past an audit it cannot parse, and a
+# Tor egress has no transport for it at all — under both, the packet is the
+# tail's to refuse, not the relay's to swallow.
+if [ "${AUDIT}" != "strict" ] && [ "${EGRESS}" != "tor" ]; then
+  if [ "${UDP_TPROXY4}" = "1" ]; then
+    ip rule add fwmark "${TPROXY_MARK}" lookup "${TPROXY_TABLE}"
+    ip route add local 0.0.0.0/0 dev lo table "${TPROXY_TABLE}"
+    # The same exemptions as the nat redirect: the gateway, loopback and the two
+    # special accounts are never captured — torsion's datagrams must reach the
+    # filter, whose REJECT is the ICMP error a wrapped command should see — and
+    # DNS keeps its own interception, whose responder answers on the socket itself.
+    iptables -t mangle -A OUTPUT -m owner --uid-owner "${GATEWAY_UID}" -j RETURN
+    iptables -t mangle -A OUTPUT -o lo -j RETURN
+    iptables -t mangle -A OUTPUT -m owner --uid-owner "${DETONATE_UID}" -j RETURN
+    iptables -t mangle -A OUTPUT -m owner --uid-owner "${TORSION_UID}" -j RETURN
+    iptables -t mangle -A OUTPUT -p udp --dport 53 -j RETURN
+    iptables -t mangle -A OUTPUT -p udp -j TPROXY --on-ip 127.0.0.1 \
+      --on-port "${UDP_PORT}" --tproxy-mark "${TPROXY_MARK}"
+    iptables -A OUTPUT -m mark --mark "${TPROXY_MARK}" -j ACCEPT
+  fi
+  if [ "${UDP_TPROXY6}" = "1" ]; then
+    ip -6 rule add fwmark "${TPROXY_MARK}" lookup "${TPROXY_TABLE}"
+    ip -6 route add local ::/0 dev lo table "${TPROXY_TABLE}"
+    ip6tables -t mangle -A OUTPUT -m owner --uid-owner "${GATEWAY_UID}" -j RETURN
+    ip6tables -t mangle -A OUTPUT -o lo -j RETURN
+    ip6tables -t mangle -A OUTPUT -m owner --uid-owner "${DETONATE_UID}" -j RETURN
+    ip6tables -t mangle -A OUTPUT -m owner --uid-owner "${TORSION_UID}" -j RETURN
+    ip6tables -t mangle -A OUTPUT -p udp --dport 53 -j RETURN
+    ip6tables -t mangle -A OUTPUT -p udp -j TPROXY --on-ip ::1 \
+      --on-port "${UDP_PORT}" --tproxy-mark "${TPROXY_MARK}"
+    ip6tables -A OUTPUT -m mark --mark "${TPROXY_MARK}" -j ACCEPT
+  fi
+fi
 
 iptables -P OUTPUT DROP
 iptables -A OUTPUT -o lo -j ACCEPT
@@ -126,11 +200,43 @@ fi
 ip6tables -F
 ip6tables -X || true
 
+# v6 NAT is the one table a sandbox kernel could be missing (`ip6table_nat`), and a
+# failing `ip6tables -t nat` under `set -e` would take the whole policy down with
+# it. Probe it once: where it is absent the v6 traffic simply is not redirected,
+# and the tails below still govern it — refuse under a strict egress, allow under a
+# permissive one, exactly as if no v6 capture existed.
+V6_NAT=0
+if ip6tables -t nat -L >/dev/null 2>&1; then
+  V6_NAT=1
+  ip6tables -t nat -F
+  ip6tables -t nat -X || true
+else
+  echo "egress-policy: this kernel has no IPv6 NAT; v6 will fall through to the tails" >&2
+fi
+
+# The v6 policy mirrors v4's: every account's TCP, DNS and relayable UDP is
+# redirected to the gateway's ::1 listeners and translated back by conntrack, and
+# the same uid exceptions apply — detonate bypasses the redirect into its drop,
+# torsion's TCP takes its own listener.
 ip6tables -P INPUT DROP
 ip6tables -P FORWARD DROP
 ip6tables -P OUTPUT DROP
 ip6tables -A INPUT -i lo -j ACCEPT
+ip6tables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 ip6tables -A OUTPUT -o lo -j ACCEPT
+ip6tables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+if [ "${V6_NAT}" = "1" ]; then
+  ip6tables -t nat -A OUTPUT -m owner --uid-owner "${GATEWAY_UID}" -j RETURN
+  ip6tables -t nat -A OUTPUT -o lo -j RETURN
+  ip6tables -t nat -A OUTPUT -m owner --uid-owner "${DETONATE_UID}" -j RETURN
+  ip6tables -t nat -A OUTPUT -m owner --uid-owner "${TORSION_UID}" -p tcp \
+    -j REDIRECT --to-ports "${TORSION_PORT}"
+  ip6tables -t nat -A OUTPUT -p tcp -j REDIRECT --to-ports "${PROXY_PORT}"
+  ip6tables -t nat -A OUTPUT -p udp --dport 53 -j REDIRECT --to-ports "${DNS_PORT}"
+fi
+
+ip6tables -A OUTPUT -m owner --uid-owner "${GATEWAY_UID}" -j ACCEPT
 
 # The two accounts whose exceptions cannot ride a permissive tail hold on v6 too: a
 # sample has no network on any address family, and the torsion leg carries nothing
@@ -139,19 +245,22 @@ ip6tables -A OUTPUT -o lo -j ACCEPT
 ip6tables -A OUTPUT -m owner --uid-owner "${DETONATE_UID}" -j NFLOG \
   --nflog-group "${NFLOG_GROUP}" --nflog-prefix "fishbowl-blocked6"
 ip6tables -A OUTPUT -m owner --uid-owner "${DETONATE_UID}" -j DROP
+ip6tables -A OUTPUT -p tcp -d ::1 --dport "${PROXY_PORT}" -j ACCEPT
+ip6tables -A OUTPUT -p tcp -d ::1 --dport "${TORSION_PORT}" -j ACCEPT
+ip6tables -A OUTPUT -p udp -d ::1 --dport "${DNS_PORT}" -j ACCEPT
 ip6tables -A OUTPUT -m owner --uid-owner "${TORSION_UID}" -j NFLOG \
   --nflog-group "${NFLOG_GROUP}" --nflog-prefix "fishbowl-noroute6"
 ip6tables -A OUTPUT -m owner --uid-owner "${TORSION_UID}" \
   -j REJECT --reject-with icmp6-adm-prohibited
 
 if [ "${AUDIT}" = "strict" ]; then
-  # IPv6 has no audited path at all, so it is refused outright rather than left open.
+  # Whatever the redirection did not claim has no audited path — under strict that
+  # is a drop, same as v4.
   ip6tables -A OUTPUT -j NFLOG --nflog-group "${NFLOG_GROUP}" \
     --nflog-prefix "fishbowl-blocked6"
   ip6tables -A OUTPUT -j DROP
 elif [ "${EGRESS}" = "auto" ] || [ "${EGRESS}" = "direct" ]; then
   ip6tables -A INPUT -p icmpv6 -j ACCEPT
-  ip6tables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
   ip6tables -A OUTPUT -m conntrack --ctstate NEW -j NFLOG \
     --nflog-group "${NFLOG_GROUP}" --nflog-prefix "fishbowl-forwarded6"
   ip6tables -A OUTPUT -j ACCEPT

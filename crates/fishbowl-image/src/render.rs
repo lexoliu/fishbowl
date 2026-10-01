@@ -107,6 +107,8 @@ pub struct EgressPolicy {
     pub torsion_port: u16,
     /// Intercepting resolver port.
     pub dns_port: u16,
+    /// UDP relay port.
+    pub udp_port: u16,
     /// Port sshd listens on.
     pub ssh_port: u16,
     /// NFLOG group refused packets are reported on.
@@ -141,6 +143,8 @@ pub struct Entrypoint {
     pub torsion_uid: u32,
     /// Intercepting resolver port.
     pub dns_port: u16,
+    /// UDP relay port.
+    pub udp_port: u16,
     /// NFLOG group refused packets are reported on.
     pub nflog_group: u16,
 }
@@ -296,6 +300,7 @@ fn sandbox_files(layout: &SandboxLayout) -> Result<SandboxFiles, askama::Error> 
             proxy_port: layout.proxy_port,
             torsion_port: layout.torsion_port,
             dns_port: layout.dns_port,
+            udp_port: layout.udp_port,
             ssh_port: layout.ssh_port,
             nflog_group: layout.nflog_group,
         }
@@ -313,6 +318,7 @@ fn sandbox_files(layout: &SandboxLayout) -> Result<SandboxFiles, askama::Error> 
             torsion_port: layout.torsion_port,
             torsion_uid: layout.torsion.uid,
             dns_port: layout.dns_port,
+            udp_port: layout.udp_port,
             nflog_group: layout.nflog_group,
         }
         .render()?,
@@ -388,7 +394,7 @@ mod tests {
     fn nothing_but_the_gateway_and_loopback_is_accepted_on_the_way_out() {
         let policy = rendered().egress_policy;
         // Every accept before the tier/egress tail is unconditional — under `strict`
-        // these five are the only ones that exist.
+        // these six are the only ones that exist.
         let tail = policy.find(r#"if [ "${AUDIT}" = "strict" ]"#).unwrap();
         let accepts: Vec<&str> = policy[..tail]
             .lines()
@@ -490,6 +496,119 @@ mod tests {
             .find(r#"ip6tables -A OUTPUT -m owner --uid-owner "${DETONATE_UID}" -j DROP"#)
             .unwrap();
         assert!(detonate_v6 < v6_tail);
+    }
+
+    #[test]
+    fn every_family_redirects_the_same_capture_set_into_the_gateway() {
+        let policy = rendered().egress_policy;
+        // v6 is the v4 policy's mirror: same listener, same per-uid carve-outs, and
+        // the torsion redirect again ordered ahead of the catch-all it would join.
+        // Rules written with a `\` continuation count as one logical line, with its
+        // runs of whitespace collapsed so a break mid-rule still matches.
+        let logical = policy
+            .replace("\\\n", " ")
+            .lines()
+            .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect::<Vec<_>>();
+        for redirect in [
+            r#"-p tcp -j REDIRECT --to-ports "${PROXY_PORT}""#,
+            r#"-p tcp -j REDIRECT --to-ports "${TORSION_PORT}""#,
+            r#"-p udp --dport 53 -j REDIRECT --to-ports "${DNS_PORT}""#,
+        ] {
+            for cmd in ["iptables", "ip6tables"] {
+                assert!(
+                    logical.iter().any(|line| {
+                        line.starts_with(&format!("{cmd} -t nat -A OUTPUT"))
+                            && line.contains(redirect)
+                    }),
+                    "{cmd}: the nat table must redirect {redirect}"
+                );
+            }
+        }
+        let v6_generic = policy
+            .find(r#"ip6tables -t nat -A OUTPUT -p tcp -j REDIRECT --to-ports "${PROXY_PORT}""#)
+            .unwrap();
+        let v6_torsion = policy
+            .find(r#"ip6tables -t nat -A OUTPUT -m owner --uid-owner "${TORSION_UID}" -p tcp"#)
+            .unwrap();
+        assert!(v6_torsion < v6_generic);
+        // And the entrypoint hands the gateway the relay's port to bind.
+        assert!(
+            rendered().entrypoint.contains("--udp-port 15002"),
+            "the gateway needs the relay port to serve it"
+        );
+    }
+
+    #[test]
+    fn the_udp_relay_only_exists_where_a_route_can_carry_it() {
+        let policy = rendered().egress_policy;
+        // Non-DNS UDP is captured by TPROXY, not NAT: a marked datagram keeps its
+        // destination, so conntrack's reply tuple stays one per remote and a client
+        // socket talking to several remotes from one port cannot collide — a
+        // REDIRECT to the relay's port would give every such flow the identical
+        // reply tuple and netfilter would drop all but the first. There must be
+        // no UDP redirect left besides DNS.
+        assert!(
+            !policy.contains("-p udp -j REDIRECT --to-ports \"${UDP_PORT}\""),
+            "UDP is TPROXY'd; a REDIRECT would reintroduce the reply-tuple collision"
+        );
+        // The capture stands only where a route can carry a datagram: `strict`
+        // keeps dropping QUIC onto an auditable transport and `tor` has none —
+        // under both, the tail's refusal governs. Everything between this gate and
+        // its closing `fi` is the capture; the inner blocks end at column two.
+        let gate = r#"if [ "${AUDIT}" != "strict" ] && [ "${EGRESS}" != "tor" ]; then"#;
+        let gated = &policy[policy.find(gate).unwrap()..];
+        let gated = &gated[..gated.find("\nfi").unwrap()];
+        for (iptables, ip, on_ip) in [
+            ("iptables", "ip ", "127.0.0.1"),
+            ("ip6tables", "ip -6 ", "::1"),
+        ] {
+            // The routing machinery: a policy route hands marked datagrams to the
+            // loopback stack, where the relay's transparent socket picks them up.
+            assert!(
+                gated.contains(&format!(
+                    "{ip}rule add fwmark \"${{TPROXY_MARK}}\" lookup \"${{TPROXY_TABLE}}\""
+                )) && gated.contains(&format!(
+                    "{ip}route add local {} dev lo table \"${{TPROXY_TABLE}}\"",
+                    if on_ip == "::1" { "::/0" } else { "0.0.0.0/0" }
+                )),
+                "{iptables}: marked packets need a fwmark rule and a local route"
+            );
+            // The exemptions mirror the nat redirect's: the gateway's own traffic,
+            // loopback, the two special accounts and DNS are never captured.
+            let mut last = 0;
+            for exempt in [
+                r#"-m owner --uid-owner "${GATEWAY_UID}" -j RETURN"#,
+                "-o lo -j RETURN",
+                r#"-m owner --uid-owner "${DETONATE_UID}" -j RETURN"#,
+                r#"-m owner --uid-owner "${TORSION_UID}" -j RETURN"#,
+                "-p udp --dport 53 -j RETURN",
+            ] {
+                let rule = format!("{iptables} -t mangle -A OUTPUT {exempt}");
+                let at = gated
+                    .find(&rule)
+                    .unwrap_or_else(|| panic!("missing: {rule}"));
+                assert!(
+                    at > last,
+                    "{iptables}: exemptions must precede the catch-all"
+                );
+                last = at;
+            }
+            assert!(
+                gated.contains(&format!(
+                    "{iptables} -t mangle -A OUTPUT -p udp -j TPROXY --on-ip {on_ip}"
+                )),
+                "{iptables}: the UDP catch-all is a TPROXY, never a redirect"
+            );
+            // A marked packet still crosses the filter's OUTPUT chain before it is
+            // rerouted — the mark is why the tails must not refuse it.
+            assert!(
+                gated.contains(&format!(
+                    "{iptables} -A OUTPUT -m mark --mark \"${{TPROXY_MARK}}\" -j ACCEPT"
+                )),
+                "{iptables}: marked packets must pass the filter before rerouting"
+            );
+        }
     }
 
     #[test]

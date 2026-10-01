@@ -48,33 +48,30 @@ pub async fn watch(group: u16, sink: AuditSink) -> Result<()> {
             source,
         })?;
 
-    send(
-        &mut socket,
-        config_request(
-            NetfilterProtoFamily::IPv4,
-            group,
-            vec![ConfigNla::Cmd(ConfigCmd::PfBind)],
-        ),
-    )
-    .await?;
-    send(
-        &mut socket,
-        config_request(
-            NetfilterProtoFamily::IPv4,
-            group,
-            vec![ConfigNla::Cmd(ConfigCmd::Bind)],
-        ),
-    )
-    .await?;
-    send(
-        &mut socket,
-        config_request(
-            NetfilterProtoFamily::IPv4,
-            group,
-            vec![ConfigNla::Mode(ConfigMode::new_packet(COPY_RANGE))],
-        ),
-    )
-    .await?;
+    // NFLOG subscriptions are per address family: a socket bound for IPv4 alone
+    // never sees what ip6tables logged, and the v6 tails refuse traffic exactly
+    // where the v4 ones do.
+    for family in [NetfilterProtoFamily::IPv4, NetfilterProtoFamily::IPv6] {
+        send(
+            &mut socket,
+            config_request(family, group, vec![ConfigNla::Cmd(ConfigCmd::PfBind)]),
+        )
+        .await?;
+        send(
+            &mut socket,
+            config_request(family, group, vec![ConfigNla::Cmd(ConfigCmd::Bind)]),
+        )
+        .await?;
+        send(
+            &mut socket,
+            config_request(
+                family,
+                group,
+                vec![ConfigNla::Mode(ConfigMode::new_packet(COPY_RANGE))],
+            ),
+        )
+        .await?;
+    }
 
     loop {
         let (bytes, _) = socket

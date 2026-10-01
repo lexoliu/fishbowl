@@ -30,16 +30,44 @@ const MAX_MESSAGE: usize = 4096;
 /// bound is the wedge guard behind them, not the real pacing.
 const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Answers redirected DNS queries until the socket fails.
+/// Answers redirected DNS queries until a socket fails.
 ///
-/// `torsion_uid` splits the queries' route just as the packet filter splits
-/// connections': a query from the dedicated account resolves inside Tor, everyone
-/// else's on the base route — a lookup must never precede the traffic it names and
-/// leak it to the wrong network.
+/// `sockets` is one bound socket per address family — `127.0.0.1` and `::1` — since
+/// the filter redirects both families' port-53 traffic here. `torsion_uid` splits
+/// the queries' route just as the packet filter splits connections': a query from
+/// the dedicated account resolves inside Tor, everyone else's on the base route —
+/// a lookup must never precede the traffic it names and leak it to the wrong
+/// network.
 ///
 /// # Errors
-/// Fails only when the listening socket itself breaks.
+/// Fails only when a listening socket itself breaks.
 pub async fn serve(
+    sockets: Vec<UdpSocket>,
+    upstream: SocketAddrV4,
+    egress: Arc<Egress>,
+    sink: AuditSink,
+    torsion_uid: u32,
+) -> Result<()> {
+    let mut tasks = tokio::task::JoinSet::new();
+    for socket in sockets {
+        let egress = Arc::clone(&egress);
+        let sink = sink.clone();
+        tasks.spawn(listen(socket, upstream, egress, sink, torsion_uid));
+    }
+    // A listener task only ends on a socket error; any one dying is serve's error.
+    match tasks.join_next().await {
+        Some(outcome) => outcome
+            .map_err(|source| GatewayError::Socket {
+                context: "joining a DNS listener",
+                source: std::io::Error::other(source.to_string()),
+            })
+            .and_then(|result| result),
+        None => unreachable!("the listener set is never empty"),
+    }
+}
+
+/// One socket's read loop: every datagram is a query to resolve.
+async fn listen(
     socket: UdpSocket,
     upstream: SocketAddrV4,
     egress: Arc<Egress>,
@@ -85,10 +113,7 @@ async fn resolve(
     // bound — and under every tier, not just those that record traffic: the uid is
     // what routes the query, so the lookup is load-bearing even when nothing is
     // written to the trail.
-    let SocketAddr::V4(source) = client else {
-        return Err(GatewayError::NotIpv4 { peer: client });
-    };
-    let owner = owner_of::<Udp>(source).await?;
+    let owner = owner_of::<Udp>(client).await?;
     let sink = sink.attributed_to(owner);
     let leg = if owner == Some(torsion_uid) {
         Leg::Torsion

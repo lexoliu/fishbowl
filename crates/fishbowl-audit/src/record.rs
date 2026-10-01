@@ -136,6 +136,16 @@ pub enum Transport {
     Other,
 }
 
+impl std::fmt::Display for Transport {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Tcp => "tcp",
+            Self::Udp => "udp",
+            Self::Other => "other",
+        })
+    }
+}
+
 /// A DNS question and its resolution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DnsQuery {
@@ -160,9 +170,13 @@ pub struct DnsAnswer {
     pub data: String,
 }
 
-/// A proxied TCP connection.
+/// A proxied connection's volume: a TCP stream, or a UDP flow between two sockets.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Connect {
+    /// What the flow carried — absent on records written before UDP was relayed,
+    /// which were all TCP, so it reads as TCP for them.
+    #[serde(default = "connect_was_tcp")]
+    pub transport: Transport,
     /// Original destination the sandbox dialled.
     pub destination: Endpoint,
     /// Hostname the destination address was most recently resolved from, when the
@@ -174,6 +188,11 @@ pub struct Connect {
     pub bytes_in: u64,
     /// How long the connection stayed open.
     pub elapsed_ms: u64,
+}
+
+/// What `Connect` records carried before UDP flows existed: TCP, all of them.
+fn connect_was_tcp() -> Transport {
+    Transport::Tcp
 }
 
 /// A TLS handshake terminated by the gateway.

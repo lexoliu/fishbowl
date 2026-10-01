@@ -1,12 +1,16 @@
 //! Recovery of the destination a redirected connection was originally aimed at.
 //!
-//! The egress policy sends every TCP connection through `iptables -t nat REDIRECT`, which
-//! rewrites the destination before the gateway ever sees it. `SO_ORIGINAL_DST` is the only
-//! place the pre-translation address survives.
+//! The egress policy sends every TCP connection through `REDIRECT`, which rewrites
+//! the destination before the gateway ever sees it. The original survives only in
+//! conntrack, exposed per family: `SO_ORIGINAL_DST` for IPv4, `IP6T_SO_ORIGINAL_DST`
+//! for IPv6.
 
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 
-use nix::sys::socket::{getsockopt, sockopt::OriginalDst};
+use nix::sys::socket::{
+    getsockopt,
+    sockopt::{Ip6tOriginalDst, OriginalDst},
+};
 use tokio::net::TcpStream;
 
 use crate::error::{GatewayError, Result};
@@ -14,21 +18,31 @@ use crate::error::{GatewayError, Result};
 /// Reads the address the peer meant to reach before netfilter redirected it.
 ///
 /// # Errors
-/// Fails when the connection did not arrive through a NAT redirect, or when it is not
-/// IPv4 — the egress policy drops IPv6 entirely, so an IPv6 arrival means the policy is
-/// not the one this gateway was built for.
+/// Fails when the connection did not arrive through a NAT redirect — the answer
+/// would be the gateway's own loopback port, which is no destination at all.
 pub fn original_destination(stream: &TcpStream) -> Result<SocketAddr> {
     let peer = stream.peer_addr().map_err(|source| GatewayError::Socket {
         context: "reading the peer address of a redirected connection",
         source,
     })?;
-    if !peer.is_ipv4() {
-        return Err(GatewayError::NotIpv4 { peer });
+    match peer {
+        SocketAddr::V4(_) => {
+            let original = getsockopt(stream, OriginalDst)
+                .map_err(|_| GatewayError::NoOriginalDestination { peer })?;
+            Ok(SocketAddr::V4(SocketAddrV4::new(
+                std::net::Ipv4Addr::from(u32::from_be(original.sin_addr.s_addr)),
+                u16::from_be(original.sin_port),
+            )))
+        }
+        SocketAddr::V6(_) => {
+            let original = getsockopt(stream, Ip6tOriginalDst)
+                .map_err(|_| GatewayError::NoOriginalDestination { peer })?;
+            Ok(SocketAddr::V6(SocketAddrV6::new(
+                std::net::Ipv6Addr::from(original.sin6_addr.s6_addr),
+                u16::from_be(original.sin6_port),
+                u32::from_be(original.sin6_flowinfo),
+                original.sin6_scope_id,
+            )))
+        }
     }
-    let address = getsockopt(stream, OriginalDst)
-        .map_err(|_| GatewayError::NoOriginalDestination { peer })?;
-    Ok(SocketAddr::V4(SocketAddrV4::new(
-        Ipv4Addr::from(u32::from_be(address.sin_addr.s_addr)),
-        u16::from_be(address.sin_port),
-    )))
 }

@@ -36,6 +36,8 @@ pub struct SandboxLayout {
     pub torsion_port: u16,
     /// Loopback port the intercepting DNS resolver listens on.
     pub dns_port: u16,
+    /// Loopback port the transparent UDP relay listens on.
+    pub udp_port: u16,
     /// Port sshd listens on inside the sandbox.
     pub ssh_port: u16,
     /// NFLOG group the packet filter reports refused traffic on.
@@ -99,6 +101,7 @@ impl Default for SandboxLayout {
             proxy_port: 15000,
             torsion_port: 15001,
             dns_port: 15353,
+            udp_port: 15002,
             ssh_port: 22,
             nflog_group: 1,
             audit_directory: PathBuf::from("/var/log/fishbowl"),
