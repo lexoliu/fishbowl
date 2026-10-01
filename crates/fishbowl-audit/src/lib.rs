@@ -12,8 +12,8 @@ mod record;
 mod io;
 
 pub use record::{
-    AuditEvent, AuditRecord, BlockReason, Blocked, Connect, DnsAnswer, DnsQuery, Endpoint,
-    HttpExchange, TlsHandshake, Transport,
+    AuditEvent, AuditRecord, BlockReason, Blocked, Connect, DnsAnswer, DnsQuery, Egress, Endpoint,
+    HttpExchange, Route, TlsHandshake, Transport,
 };
 
 #[cfg(feature = "io")]

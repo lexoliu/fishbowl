@@ -1,0 +1,72 @@
+[package]
+name = "fishbowl-egress"
+description = "The transports a fishbowl session's audited egress rides on: Cloudflare WARP, Tor, or the plain internet."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+# Guest-side, like the gateway that uses it. Nothing here needs Linux, though: both
+# transports are sockets owned by the gateway's own process, so the crate builds and is
+# tested on the host as well — only the transports are feature-gated, so the host CLI can
+# speak of them without compiling them.
+[package.metadata.dist]
+dist = false
+
+[features]
+default = []
+
+# A userspace WireGuard tunnel to Cloudflare WARP: boringtun carries the packets,
+# smoltcp answers them as the stack at our end of the tunnel.
+warp = [
+  "dep:base64",
+  "dep:boringtun",
+  "dep:hickory-proto",
+  "dep:http",
+  "dep:http-body-util",
+  "dep:hyper",
+  "dep:hyper-util",
+  "dep:jiff",
+  "dep:rustls",
+  "dep:smoltcp",
+  "dep:tokio-rustls",
+  "dep:webpki-roots",
+]
+# Egress over the Tor network, bootstrapped in-process.
+tor = ["dep:arti-client", "dep:tor-rtcompat"]
+
+[dependencies]
+clap.workspace = true
+getrandom.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+tracing.workspace = true
+
+arti-client = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+boringtun = { workspace = true, optional = true }
+hickory-proto = { workspace = true, optional = true }
+http = { workspace = true, optional = true }
+http-body-util = { workspace = true, optional = true }
+hyper = { workspace = true, optional = true }
+hyper-util = { workspace = true, optional = true }
+jiff = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+smoltcp = { workspace = true, optional = true }
+tokio-rustls = { workspace = true, optional = true }
+tor-rtcompat = { workspace = true, optional = true }
+webpki-roots = { workspace = true, optional = true }
+
+# The smoke example needs a full Tokio runtime and log output the library itself does
+# not.
+[dev-dependencies]
+tokio.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

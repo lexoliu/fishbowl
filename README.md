@@ -32,6 +32,18 @@ process before anything else runs, and `CAP_NET_ADMIN` is removed from the bound
 afterwards, so code inside the sandbox cannot change it even as root. If the gateway
 dies, the redirect target stops listening and egress fails closed.
 
+**The route out is yours.** Audited traffic leaves the machine over an egress transport
+chosen when the session is opened (`--egress`): `auto`, the default, tunnels through
+Cloudflare WARP when a tunnel can be raised and falls back to the machine's own address
+when it cannot; `warp` and `tor` are strict — while their transport is down,
+connections are refused rather than sent out under your address — and `direct` asks
+for no tunnel at all. Both transports live inside the gateway's own process — a
+userspace WireGuard session for WARP, an Arti client for Tor — so the packet filter
+never changes, and every transition between routes is itself written to the audit
+trail. DNS crosses the same route, and destinations no exit could ever reach — the
+machine's own network, private and local address space — always go direct, whatever
+the mode.
+
 ## Install
 
 ```sh
@@ -202,6 +214,7 @@ untouched — its credentials file is read, never written.
 | `fishbowl-courier` | Holds an agent's borrowed credential in-guest (Linux only) |
 | `fishbowl-creds` | The borrowed credential's wire and on-disk formats |
 | `fishbowl-audit` | Audit record schema and JSONL reader/writer |
+| `fishbowl-egress` | The transports a session's audited egress rides on: WARP, Tor, or direct |
 | `fishbowl-agents` | Reads the host's logins and registers a session with Codex |
 
 ## Install

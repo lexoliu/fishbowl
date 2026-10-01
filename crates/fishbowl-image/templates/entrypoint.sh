@@ -10,6 +10,7 @@ set -euo pipefail
 readonly GATEWAY_USER={{ gateway_user }}
 readonly AUDIT_TRAIL={{ audit_trail }}
 readonly CA_CERTIFICATE={{ ca_certificate }}
+readonly EGRESS_STATE={{ egress_state }}
 readonly AUTHORIZED_KEYS={{ authorized_keys }}
 readonly WORK_DIR={{ work_dir }}
 readonly RUNTIME_DIR={{ runtime_dir }}
@@ -18,6 +19,11 @@ readonly GATEWAY=/usr/local/bin/fishbowl-gateway
 /usr/local/lib/fishbowl/egress-policy.sh
 
 install -d -o "${GATEWAY_USER}" -g "${GATEWAY_USER}" -m 0750 "$(dirname "${AUDIT_TRAIL}")"
+
+# The egress state is the gateway's alone at 0700: a WARP device registration is a
+# credential, and Tor's cache is nobody else's business. Both must survive a gateway
+# restart, so they live under the gateway's home rather than beside the audit trail.
+install -d -o "${GATEWAY_USER}" -g "${GATEWAY_USER}" -m 0700 "${EGRESS_STATE}"
 
 # The authority is minted in its own run, so it is on disk and in the sandbox's trust
 # store before anything is listening. Waiting on a file a background process may or may
@@ -40,7 +46,9 @@ setpriv --reuid="${GATEWAY_USER}" --regid="${GATEWAY_USER}" --clear-groups \
     --proxy-port {{ proxy_port }} \
     --dns-port {{ dns_port }} \
     --nflog-group {{ nflog_group }} \
-    --upstream-resolver "${FISHBOWL_RESOLVER}" &
+    --upstream-resolver "${FISHBOWL_RESOLVER}" \
+    --egress "${FISHBOWL_EGRESS:-auto}" \
+    --egress-state "${EGRESS_STATE}" &
 
 # The host's public key arrives in the environment rather than on a mount. sshd refuses an
 # authorized-keys file it does not consider safely owned, and a file this script writes as

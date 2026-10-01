@@ -13,6 +13,7 @@ use std::{
 };
 
 use anyhow::{Context as _, Result, bail};
+use fishbowl_egress::Mode;
 use fishbowl_runtime::{
     Arch, Capability, ContainerName, ContainerSpec, ContainerState, ImageReference, Mount,
     Reservation, RunState, Sandbox,
@@ -46,6 +47,7 @@ const NAME_VARIABLE: &str = "FISHBOWL_NAME";
 const RESOLVER_VARIABLE: &str = "FISHBOWL_RESOLVER";
 const AUTHORIZED_KEY_VARIABLE: &str = "FISHBOWL_AUTHORIZED_KEY";
 const WORK_ALIAS_VARIABLE: &str = "FISHBOWL_WORK_ALIAS";
+const EGRESS_VARIABLE: &str = "FISHBOWL_EGRESS";
 
 /// A session whose machine is running and reachable right now, held by this process.
 #[derive(Debug)]
@@ -120,6 +122,7 @@ async fn ensure_services(host: &Host) -> Result<()> {
 /// Creates a session, and the machine underneath it.
 async fn create(host: &Host, attach: &cli::Attach) -> Result<Session> {
     let arch = attach.arch.unwrap_or(Arch::HOST);
+    let egress = attach.egress.unwrap_or_default();
     let samples = canonical_samples(attach.samples.as_deref())?;
 
     // The image is named before anything is reclaimed, because reclamation takes away
@@ -157,6 +160,7 @@ async fn create(host: &Host, attach: &cli::Attach) -> Result<Session> {
         name,
         image: image.clone(),
         arch,
+        egress,
         key: &key,
         reservation,
         samples: samples.clone(),
@@ -177,6 +181,7 @@ async fn create(host: &Host, attach: &cli::Attach) -> Result<Session> {
         researcher: layout.researcher.name.clone(),
         work_dir: layout.work_dir.clone(),
         samples,
+        egress,
         identity_file: key.identity_file().to_path_buf(),
         created_at: now,
         last_used: now,
@@ -235,6 +240,17 @@ async fn resume(host: &Host, attach: &cli::Attach, mut record: SessionRecord) ->
                 |mounted| mounted.display().to_string()
             ),
             samples.display()
+        );
+    }
+    if let Some(egress) = attach.egress
+        && egress != record.egress
+    {
+        bail!(
+            "session {} was created with `--egress {}`, but was asked for {egress}; a \
+             machine's egress is settled when it is created, so start a new session for \
+             {egress} instead",
+            record.id,
+            record.egress
         );
     }
 
@@ -304,6 +320,7 @@ struct Machine<'key> {
     name: ContainerName,
     image: ImageReference,
     arch: Arch,
+    egress: Mode,
     key: &'key SandboxKey,
     reservation: Reservation<Sandbox>,
     samples: Option<PathBuf>,
@@ -348,6 +365,8 @@ impl Machine<'_> {
             AUTHORIZED_KEY_VARIABLE.to_owned(),
             self.key.authorized_key().to_owned(),
         );
+        spec.env
+            .insert(EGRESS_VARIABLE.to_owned(), self.egress.to_string());
         // Not a mount: the entrypoint makes this path a symlink to the work directory, so an
         // agent that resolved it on the host executes in the session's own filesystem and
         // the host directory it named stays empty.

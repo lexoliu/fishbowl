@@ -6,6 +6,7 @@ members = [
   "crates/fishbowl-audit",
   "crates/fishbowl-courier",
   "crates/fishbowl-creds",
+  "crates/fishbowl-egress",
   "crates/fishbowl-gateway",
   "crates/fishbowl-image",
   "crates/fishbowl-runtime",
@@ -16,6 +17,7 @@ default-members = [
   "crates/fishbowl-agents",
   "crates/fishbowl-audit",
   "crates/fishbowl-creds",
+  "crates/fishbowl-egress",
   "crates/fishbowl-image",
   "crates/fishbowl-runtime",
 ]
@@ -36,10 +38,14 @@ fishbowl-audit = { path = "crates/fishbowl-audit", version = "0.2.1" }
 fishbowl-agents = { path = "crates/fishbowl-agents", version = "0.2.1" }
 fishbowl-courier = { path = "crates/fishbowl-courier", version = "0.2.1" }
 fishbowl-creds = { path = "crates/fishbowl-creds", version = "0.2.1" }
+fishbowl-egress = { path = "crates/fishbowl-egress", version = "0.2.1" }
 fishbowl-gateway = { path = "crates/fishbowl-gateway", version = "0.2.1" }
 
 anyhow = "1.0"
+arti-client = { version = "0.46", default-features = false, features = ["tokio", "rustls", "compression"] }
 askama = "0.16"
+base64 = "0.22"
+boringtun = "0.7"
 clap = { version = "4.6", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -63,11 +69,21 @@ rcgen = { version = "0.14", default-features = false, features = ["pem", "ring",
 rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
 security-framework = "3"
 sha2 = "0.10"
+smoltcp = { version = "0.14", default-features = false, features = [
+  "std",
+  "medium-ip",
+  "proto-ipv4",
+  "proto-ipv6",
+  "socket-tcp",
+  "socket-udp",
+  "async",
+] }
 sysinfo = { version = "0.39", default-features = false, features = ["disk", "system"] }
 ssh-key = { version = "0.6", default-features = false, features = ["ed25519", "getrandom", "rand_core", "std"] }
 tempfile = "3"
 tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "ring", "tls12"] }
 toml = "0.9"
+tor-rtcompat = "0.46"
 webpki-roots = "1"
 toml_edit = "0.24"
 unicode-normalization = "0.1"

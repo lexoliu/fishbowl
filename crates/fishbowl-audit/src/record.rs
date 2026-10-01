@@ -33,6 +33,9 @@ pub enum AuditEvent {
     Tls(TlsHandshake),
     /// A complete HTTP request/response pair seen inside a proxied connection.
     Http(HttpExchange),
+    /// Which network the gateway's own upstream traffic rides on, recorded when it
+    /// changes — a tunnel raised, a tunnel lost, a fallback taken.
+    Egress(Egress),
     /// Traffic the packet filter refused.
     Blocked(Blocked),
 }
@@ -132,6 +135,35 @@ pub struct HttpExchange {
     pub elapsed_ms: u64,
 }
 
+/// A change in which network carries the gateway's upstream connections.
+///
+/// The gateway's outbound sockets are what the sandbox's traffic travels over once
+/// audited, so which route they take is itself part of the trail: it is the difference
+/// between a record written through a Cloudflare exit and one written through the
+/// machine's own address.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Egress {
+    /// What upstream traffic goes over now.
+    pub route: Route,
+    /// Why the route is this one, when it is a fallback or an outage rather than the
+    /// transport the session asked for.
+    pub reason: Option<String>,
+}
+
+/// The network carrying the gateway's own connections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Route {
+    /// A Cloudflare WARP tunnel.
+    Warp,
+    /// The Tor network.
+    Tor,
+    /// The plain internet, by the machine's own address.
+    Direct,
+    /// Nothing: a strict mode's transport is down, so egress is refused.
+    Down,
+}
+
 /// Traffic the packet filter refused to forward.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Blocked {
@@ -154,4 +186,7 @@ pub enum BlockReason {
     NoHandler,
     /// The upstream connection failed and the gateway reported it as refused.
     UpstreamUnreachable,
+    /// The egress transport the session's policy requires is down, so the request was
+    /// refused rather than let out unaudited.
+    EgressUnavailable,
 }

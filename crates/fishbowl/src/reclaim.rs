@@ -307,6 +307,7 @@ mod tests {
             researcher: "researcher".to_owned(),
             work_dir: PathBuf::from("/work"),
             samples: None,
+            egress: fishbowl_egress::Mode::Auto,
             identity_file: PathBuf::from("/keys/id"),
             created_at: last_used,
             last_used,

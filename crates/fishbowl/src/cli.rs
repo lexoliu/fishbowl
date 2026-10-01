@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
+use fishbowl_egress::Mode;
 use fishbowl_runtime::Arch;
 
 use crate::session::SessionId;
@@ -83,6 +84,15 @@ pub struct Attach {
     /// directory pulls the image this version was published as.
     #[arg(long)]
     pub workspace: Option<PathBuf>,
+    /// Which network the session's audited egress rides on.
+    ///
+    /// `auto` tunnels through Cloudflare WARP when the tunnel can be raised and falls
+    /// back to direct egress when it cannot. `warp` and `tor` are strict: while their
+    /// transport is down, connections are refused rather than sent out under the
+    /// machine's own address — the more secure failure mode for work that must never
+    /// leak where it ran. Settled when the session is created.
+    #[arg(long, value_enum)]
+    pub egress: Option<Mode>,
 }
 
 /// Arguments of `claude`.

@@ -102,6 +102,8 @@ pub struct Entrypoint {
     pub audit_trail: String,
     /// Gateway CA certificate path.
     pub ca_certificate: String,
+    /// Directory the egress transports keep their persistent state in.
+    pub egress_state: String,
     /// Authorized keys file the entrypoint writes the host's public key into.
     pub authorized_keys: String,
     /// Directory work happens in, which the agent's path is aliased to.
@@ -215,6 +217,7 @@ impl RenderedImage {
             gateway_user: layout.gateway.name.clone(),
             audit_trail: layout.audit_trail().display().to_string(),
             ca_certificate: layout.ca_certificate().display().to_string(),
+            egress_state: layout.egress_state().display().to_string(),
             authorized_keys: layout.authorized_keys.display().to_string(),
             work_dir: layout.work_dir.display().to_string(),
             researcher_user: layout.researcher.name.clone(),

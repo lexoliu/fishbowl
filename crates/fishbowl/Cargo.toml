@@ -13,6 +13,9 @@ rust-version.workspace = true
 fishbowl-agents.workspace = true
 fishbowl-audit = { workspace = true, features = ["io"] }
 fishbowl-creds.workspace = true
+# The host CLI needs only the mode vocabulary; the transports stay compiled out here
+# and are enabled by the gateway, which is what runs them.
+fishbowl-egress.workspace = true
 fishbowl-image.workspace = true
 fishbowl-runtime.workspace = true
 anyhow.workspace = true

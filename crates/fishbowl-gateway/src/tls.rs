@@ -8,12 +8,10 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use fishbowl_audit::{Endpoint, TlsHandshake};
+use fishbowl_egress::{Egress, Upstream};
 use rustls::{ClientConfig, RootCertStore, ServerConfig, pki_types::ServerName};
 use sha2::{Digest, Sha256};
-use tokio::{
-    io::{AsyncRead, AsyncWrite},
-    net::TcpStream,
-};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_rustls::{TlsAcceptor, TlsConnector, client, server};
 
 use crate::{
@@ -28,8 +26,9 @@ const ALPN_HTTP11: &[u8] = b"http/1.1";
 pub struct InterceptedTls<S> {
     /// Session with the sandbox, terminated by the gateway's minted leaf.
     pub sandbox: server::TlsStream<S>,
-    /// Session with the real destination, verified against the public roots.
-    pub upstream: client::TlsStream<TcpStream>,
+    /// Session with the real destination, verified against the public roots, on
+    /// whichever transport the session's egress mode carries it over.
+    pub upstream: client::TlsStream<Upstream>,
     /// What the two handshakes agreed on.
     pub handshake: TlsHandshake,
 }
@@ -68,6 +67,7 @@ impl TlsBridge {
         sandbox: S,
         peer: SocketAddr,
         destination: SocketAddr,
+        egress: &Egress,
     ) -> Result<InterceptedTls<S>>
     where
         S: AsyncRead + AsyncWrite + Unpin,
@@ -97,7 +97,8 @@ impl TlsBridge {
         };
 
         let upstream_tcp =
-            TcpStream::connect(destination)
+            egress
+                .connect(destination)
                 .await
                 .map_err(|source| GatewayError::Socket {
                     context: "connecting to the destination of an intercepted TLS connection",

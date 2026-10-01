@@ -41,7 +41,7 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - name: Clippy
-        run: cargo clippy -p fishbowl-gateway -p fishbowl-courier --all-targets -- -D warnings
+        run: cargo clippy -p fishbowl-gateway -p fishbowl-courier -p fishbowl-egress --all-targets -- -D warnings
       - uses: taiki-e/install-action@nextest
       - name: Tests
-        run: cargo nextest run -p fishbowl-gateway -p fishbowl-courier
+        run: cargo nextest run -p fishbowl-gateway -p fishbowl-courier -p fishbowl-egress

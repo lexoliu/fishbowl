@@ -124,6 +124,15 @@ impl SandboxLayout {
         self.gateway_home.join(CA_FILE_NAME)
     }
 
+    /// Directory the egress transports keep what must survive a restart in: the WARP
+    /// device registration and Tor's consensus cache. It sits under the gateway's
+    /// home, which nothing but the gateway account can read — the WARP registration
+    /// in it is a device credential, and a sample must not inherit one.
+    #[must_use]
+    pub fn egress_state(&self) -> PathBuf {
+        self.gateway_home.join("egress")
+    }
+
     /// Directory the audit trail lives in.
     #[must_use]
     pub fn audit_directory(&self) -> &Path {
