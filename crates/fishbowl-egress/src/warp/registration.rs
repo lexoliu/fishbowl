@@ -62,13 +62,8 @@ struct DeviceConfig {
 
 #[derive(Debug, Deserialize)]
 struct PeerConfig {
-    public_key: PeerKey,
+    public_key: String,
     endpoint: EndpointHints,
-}
-
-#[derive(Debug, Deserialize)]
-struct PeerKey {
-    key: String,
 }
 
 /// The peer's addresses; `v4` arrives as a `host:port` string whose port is `0` —
@@ -210,8 +205,9 @@ async fn register(file: &Path, resolver: SocketAddrV4) -> Result<Device, Registr
         .await
         .map_err(RegistrationError::Lookup)?;
 
-    let registration: Registration = api_post(
+    let registration: Registration = api_request(
         api,
+        Method::POST,
         &format!("/{API_VERSION}/reg"),
         None,
         &serde_json::json!({
@@ -227,8 +223,9 @@ async fn register(file: &Path, resolver: SocketAddrV4) -> Result<Device, Registr
     .await?;
 
     // Registration leaves `warp_enabled` off; the device is not a tunnel until this lands.
-    let _: serde::de::IgnoredAny = api_post(
+    let _: serde::de::IgnoredAny = api_request(
         api,
+        Method::PATCH,
         &format!("/{API_VERSION}/reg/{}", registration.id),
         Some(&registration.token),
         &serde_json::json!({ "warp_enabled": true }),
@@ -243,7 +240,7 @@ async fn register(file: &Path, resolver: SocketAddrV4) -> Result<Device, Registr
     let endpoint = peer_endpoint(peer)?;
     let device_file = DeviceFile {
         private_key: Base64.encode(private),
-        peer_public_key: peer.public_key.key.clone(),
+        peer_public_key: peer.public_key.clone(),
         endpoint,
         address_v4: registration.config.interface.addresses.v4,
         address_v6: registration.config.interface.addresses.v6,
@@ -308,8 +305,9 @@ fn peer_endpoint(peer: &PeerConfig) -> Result<SocketAddrV4, RegistrationError> {
 }
 
 /// One JSON call against the device API, over TLS 1.2 by the pinned address.
-async fn api_post<T: serde::de::DeserializeOwned>(
+async fn api_request<T: serde::de::DeserializeOwned>(
     api: Ipv4Addr,
+    method: Method,
     path: &str,
     token: Option<&str>,
     body: &serde_json::Value,
@@ -335,7 +333,7 @@ async fn api_post<T: serde::de::DeserializeOwned>(
         let driving = tokio::spawn(connection);
 
         let mut request = Request::builder()
-            .method(Method::POST)
+            .method(method)
             .uri(Uri::from_str(path).expect("a static API path is a valid URI"))
             .header(header::HOST, API_HOST)
             .header(header::USER_AGENT, "okhttp/3.12.1")
