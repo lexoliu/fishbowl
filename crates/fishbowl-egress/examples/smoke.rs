@@ -57,15 +57,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // A DNS exchange: the wire message goes over whatever route connections take.
-    let answer = egress.dns_exchange(RESOLVER, &example_com_query()).await;
+    let answer = egress.dns_exchange(RESOLVER, &a_query("example.com")).await;
     match answer {
         Ok(answer) => println!("dns: example.com answered in {}B", answer.len()),
         Err(error) => println!("dns: refused — {error}"),
     }
 
     // A TCP exchange: `cdn-cgi/trace` reports `warp=on` when Cloudflare sees the
-    // connection come in through its own tunnel.
-    match http_trace(&egress).await {
+    // connection come in through its own tunnel. Over Tor the probe goes elsewhere —
+    // Cloudflare's edge drops Tor exits outright.
+    let target = match mode {
+        Mode::Tor => ("detectportal.firefox.com", "/"),
+        _ => ("www.cloudflare.com", "/cdn-cgi/trace"),
+    };
+    match http_trace(&egress, target).await {
         Ok(response) => {
             let warp = response
                 .lines()
@@ -81,31 +86,89 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn http_trace(egress: &Egress) -> std::io::Result<String> {
-    let mut stream = egress
-        .connect(SocketAddr::from((Ipv4Addr::new(1, 1, 1, 1), 80)))
-        .await?;
+async fn http_trace(egress: &Egress, (host, path): (&str, &str)) -> std::io::Result<String> {
+    // `1.1.1.1` now redirects the trace to HTTPS; `www.cloudflare.com` still answers it
+    // on port 80. Resolving it through the egress keeps the lookup on the tunnel too.
+    // Over Tor a stream can be accepted by an exit and still die at first use, so the
+    // exchange retries a few times like the transport's own exchanges do.
+    let mut last_error = None;
+    for _ in 0..4 {
+        match http_exchange(egress, (host, path)).await {
+            Ok(response) => return Ok(response),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| std::io::Error::other("no exchange could land")))
+}
+
+async fn http_exchange(egress: &Egress, (host, path): (&str, &str)) -> std::io::Result<String> {
+    let answer = egress.dns_exchange(RESOLVER, &a_query(host)).await?;
+    let address = first_a(&answer)
+        .ok_or_else(|| std::io::Error::other(format!("{host} carried no A record")))?;
+    let mut stream = egress.connect(SocketAddr::from((address, 80))).await?;
     stream
-        .write_all(b"GET /cdn-cgi/trace HTTP/1.1\r\nHost: 1.1.1.1\r\nConnection: close\r\n\r\n")
+        .write_all(
+            format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").as_bytes(),
+        )
         .await?;
+    stream.flush().await?;
     let mut response = String::new();
     stream.read_to_string(&mut response).await?;
     Ok(response)
 }
 
-/// A wire-format A query for `example.com`, hand-built so the example builds without
-/// either transport's dependencies.
-fn example_com_query() -> Vec<u8> {
+/// A wire-format A query for `name`, hand-built so the example builds without either
+/// transport's dependencies.
+fn a_query(name: &str) -> Vec<u8> {
     let mut query = vec![
         0x12, 0x34, // id
         0x01, 0x00, // recursion desired
         0x00, 0x01, // one question
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // no answer/authority/additional records
     ];
-    for label in ["example", "com"] {
+    for label in name.split('.') {
         query.push(u8::try_from(label.len()).unwrap());
         query.extend_from_slice(label.as_bytes());
     }
     query.extend_from_slice(&[0x00, 0x00, 0x01, 0x00, 0x01]); // root, A, IN
     query
+}
+
+/// The first A record in a wire-format DNS response, walked by hand for the same reason
+/// the query is.
+fn first_a(message: &[u8]) -> Option<Ipv4Addr> {
+    let header = message.get(..12)?;
+    let questions = usize::from(u16::from_be_bytes([header[4], header[5]]));
+    let answers = usize::from(u16::from_be_bytes([header[6], header[7]]));
+    let mut offset = 12;
+    for _ in 0..questions {
+        offset = skip_name(message, offset)? + 4;
+    }
+    for _ in 0..answers {
+        offset = skip_name(message, offset)?;
+        let fields = message.get(offset..offset + 10)?;
+        let record_type = u16::from_be_bytes([fields[0], fields[1]]);
+        let length = usize::from(u16::from_be_bytes([fields[8], fields[9]]));
+        offset += 10;
+        let rdata = message.get(offset..offset + length)?;
+        if record_type == 1 && length == 4 {
+            return Some(Ipv4Addr::new(rdata[0], rdata[1], rdata[2], rdata[3]));
+        }
+        offset += length;
+    }
+    None
+}
+
+/// Where a DNS name ends: at the root label or at a compression pointer.
+fn skip_name(message: &[u8], mut offset: usize) -> Option<usize> {
+    loop {
+        let byte = *message.get(offset)?;
+        if byte == 0 {
+            return Some(offset + 1);
+        }
+        if byte & 0xC0 == 0xC0 {
+            return Some(offset + 2);
+        }
+        offset += 1 + usize::from(byte);
+    }
 }
