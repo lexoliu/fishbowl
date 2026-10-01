@@ -99,6 +99,21 @@ fn event(event: &AuditEvent) -> String {
             handshake.alpn.as_deref().unwrap_or("-"),
             &handshake.upstream_cert_sha256[..16.min(handshake.upstream_cert_sha256.len())]
         ),
+        AuditEvent::TlsSeen(seen) => format!(
+            "tls    {} sni={} alpn={} (relayed)",
+            destination(&seen.destination, None),
+            seen.server_name.as_deref().unwrap_or("-"),
+            if seen.alpn.is_empty() {
+                "-".to_owned()
+            } else {
+                seen.alpn.join(",")
+            }
+        ),
+        AuditEvent::Forwarded(forwarded) => format!(
+            "fwd    {} {} (uninspected)",
+            transport(forwarded.transport),
+            destination(&forwarded.destination, None)
+        ),
         AuditEvent::Http(exchange) => format!(
             "http   {} {} -> {} ({}B in, {}B out, {}ms)",
             exchange.method,
@@ -148,5 +163,6 @@ const fn reason(reason: BlockReason) -> &'static str {
         BlockReason::EgressUnavailable => {
             "the required egress transport is down; the request was refused"
         }
+        BlockReason::NoRoute => "no permitted egress route can carry this transport",
     }
 }

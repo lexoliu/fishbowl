@@ -66,6 +66,18 @@ impl<S: AsyncRead + Unpin> Prefixed<S> {
             inner,
         })
     }
+
+    /// Appends one socket read to the buffered prefix, returning the bytes added.
+    ///
+    /// Handlers that need more than [`PROBE_LEN`] to identify a connection — a TLS
+    /// client hello is a whole record, not eight bytes — grow the prefix here. The
+    /// appended bytes replay like the rest of the prefix, so the peer still receives
+    /// everything it sent. The read lands in the buffer's spare capacity directly:
+    /// a stack array this size would be carried inside every future that awaits it.
+    pub async fn read_more(&mut self) -> io::Result<usize> {
+        self.prefix.reserve(16384);
+        self.inner.read_buf(&mut self.prefix).await
+    }
 }
 
 impl<S: AsyncRead + Unpin> AsyncRead for Prefixed<S> {

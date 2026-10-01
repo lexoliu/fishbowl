@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
+use fishbowl_audit::Tier;
 use fishbowl_egress::Mode;
 use fishbowl_runtime::Arch;
 
@@ -93,6 +94,18 @@ pub struct Attach {
     /// leak where it ran. Settled when the session is created.
     #[arg(long, value_enum)]
     pub egress: Option<Mode>,
+    /// How much of the session's traffic the in-sandbox gateway inspects.
+    ///
+    /// `strict` terminates TLS and drops whatever it cannot audit in cleartext — the
+    /// trail is the whole story, at the price of breaking TLS pinning and HTTP/2-only
+    /// clients. `default` audits without standing in the way: TLS client hellos are
+    /// read for their SNI and relayed untouched end-to-end, plaintext HTTP is parsed
+    /// where it already is plaintext, and traffic no permitted route can carry is
+    /// refused immediately rather than dropped into a timeout. `off` relays everything
+    /// and records nothing but the egress layer's own route reports. Settled when the
+    /// session is created.
+    #[arg(long, value_enum)]
+    pub audit: Option<Tier>,
     /// Open the session as a red team engagement.
     ///
     /// Before anything is started, the terminal asks the operator to attest that they
@@ -270,5 +283,20 @@ mod tests {
             "the composite is reached through `--redteam`, which gates it behind the \
              attestation"
         );
+    }
+
+    #[test]
+    fn the_audit_tier_names_only_what_the_gateway_can_do() {
+        assert!(
+            Cli::try_parse_from(["fishbowl", "shell", "--audit", "everything"]).is_err(),
+            "an audit tier is a gateway mode, not a level of detail"
+        );
+        let Command::Shell(shell) = Cli::try_parse_from(["fishbowl", "shell", "--audit", "off"])
+            .unwrap()
+            .command
+        else {
+            panic!("`shell` parses as `shell`");
+        };
+        assert_eq!(shell.attach.audit, Some(Tier::Off));
     }
 }

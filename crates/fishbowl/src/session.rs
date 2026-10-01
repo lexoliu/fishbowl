@@ -8,6 +8,7 @@ use std::{
 
 use anyhow::{Context as _, Result};
 use fishbowl_agents::SandboxEndpoint;
+use fishbowl_audit::Tier;
 use fishbowl_egress::Mode;
 use fishbowl_runtime::{Arch, ContainerName, ImageReference};
 use jiff::Timestamp;
@@ -137,6 +138,14 @@ pub struct SessionRecord {
     /// do, since their image's gateway has no egress to configure.
     #[serde(default = "egress_before_the_egress_layer")]
     pub egress: Mode,
+    /// How much of the session's traffic the in-sandbox gateway inspects.
+    ///
+    /// Settled when the session is created, like the egress it rides on. Records
+    /// written before audit tiers existed ran a gateway that terminated TLS and
+    /// dropped what it could not audit, so they read as [`Tier::Strict`] — what those
+    /// sessions still do.
+    #[serde(default = "audit_before_the_audit_tiers")]
+    pub audit: Tier,
     /// Whether the session is a red team engagement: its agent is briefed for
     /// offensive work, and every opening re-asks the operator's authorization.
     ///
@@ -160,6 +169,12 @@ pub struct SessionRecord {
 /// connects out directly, and only directly.
 fn egress_before_the_egress_layer() -> Mode {
     Mode::Direct
+}
+
+/// The audit tier sessions had before audit tiers existed: their image's gateway
+/// terminates TLS and drops what it cannot audit, which is the strict contract.
+fn audit_before_the_audit_tiers() -> Tier {
+    Tier::Strict
 }
 
 impl SessionRecord {
@@ -268,6 +283,7 @@ mod tests {
             work_dir: PathBuf::from("/work"),
             samples: None,
             egress: Mode::Auto,
+            audit: Tier::Default,
             redteam: false,
             identity_file: PathBuf::from("/keys/a3f19c"),
             created_at: Timestamp::now(),

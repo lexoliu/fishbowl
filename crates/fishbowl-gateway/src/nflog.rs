@@ -6,7 +6,7 @@
 //! turns it into an audit record naming the account that sent it.
 
 use etherparse::{NetHeaders, PacketHeaders, TransportHeader};
-use fishbowl_audit::{AuditEvent, BlockReason, Blocked, Endpoint, Transport};
+use fishbowl_audit::{AuditEvent, BlockReason, Blocked, Endpoint, Forwarded, Transport};
 use netlink_packet_core::{NLM_F_ACK, NLM_F_REQUEST, NetlinkMessage, NetlinkPayload};
 use netlink_packet_netfilter::{
     NetfilterMessage, NetfilterMessageInner, NetfilterProtoFamily,
@@ -127,10 +127,12 @@ async fn send(
 async fn report(attributes: &[PacketNla], sink: &AuditSink) {
     let mut uid = None;
     let mut payload = None;
+    let mut prefix = None;
     for attribute in attributes {
         match attribute {
             PacketNla::Uid(value) => uid = Some(*value),
             PacketNla::Payload(bytes) => payload = Some(bytes.as_slice()),
+            PacketNla::Prefix(value) => prefix = Some(value.to_string_lossy()),
             _ => {}
         }
     }
@@ -144,13 +146,26 @@ async fn report(attributes: &[PacketNla], sink: &AuditSink) {
     let Some(destination) = destination_of(&headers) else {
         return;
     };
-    sink.attributed_to(uid)
-        .record(AuditEvent::Blocked(Blocked {
-            transport: transport_of(&headers),
+    let transport = transport_of(&headers);
+    // The prefix is the filter's verdict for the packet: what it was about to do with
+    // it, which under a permissive audit tier is "forward it uninspected".
+    let event = match prefix.as_deref() {
+        Some("fishbowl-forwarded" | "fishbowl-forwarded6") => AuditEvent::Forwarded(Forwarded {
+            transport,
+            destination,
+        }),
+        Some("fishbowl-noroute" | "fishbowl-noroute6") => AuditEvent::Blocked(Blocked {
+            transport,
+            destination,
+            reason: BlockReason::NoRoute,
+        }),
+        _ => AuditEvent::Blocked(Blocked {
+            transport,
             destination,
             reason: BlockReason::UnauditableTransport,
-        }))
-        .await;
+        }),
+    };
+    sink.attributed_to(uid).record(event).await;
 }
 
 fn destination_of(headers: &PacketHeaders<'_>) -> Option<Endpoint> {

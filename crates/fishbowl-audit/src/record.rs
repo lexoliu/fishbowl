@@ -17,11 +17,79 @@ pub struct AuditRecord {
     pub event: AuditEvent,
 }
 
+/// How much of the sandbox's traffic the gateway is asked to inspect.
+///
+/// This is a separate axis from the egress mode: the mode decides which network a
+/// connection leaves on, the tier decides what the gateway does to it first. Every
+/// packet still crosses the gateway — `off` turns the recorder down, it does not open
+/// a side channel around the egress policy.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    clap::ValueEnum,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum Tier {
+    /// Terminate TLS and parse everything that can be parsed; whatever cannot be
+    /// audited in cleartext — QUIC, other UDP, IPv6 — is refused rather than carried.
+    /// The failure mode favours completeness: a sample that insists on QUIC has no
+    /// network, and the trail stays the whole story.
+    Strict,
+    /// Audit everything that can be audited without standing in the connection's way:
+    /// DNS questions are answered and recorded, TLS client hellos are read for their
+    /// SNI but never terminated, HTTP is parsed where it is plaintext, and traffic no
+    /// route can carry is refused immediately rather than dropped into a timeout.
+    /// Encrypted payloads pass end-to-end.
+    #[default]
+    Default,
+    /// Relay only: connections are forwarded and nothing about them is written. The
+    /// egress layer's own route reports are still recorded — they carry no user data,
+    /// and they are the host's only proof that a strict egress mode is enforced.
+    Off,
+}
+
+impl std::fmt::Display for Tier {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Strict => "strict",
+            Self::Default => "default",
+            Self::Off => "off",
+        })
+    }
+}
+
+/// A string that names no audit tier.
+#[derive(Debug, thiserror::Error)]
+#[error("`{0}` is not an audit tier; expected one of: strict, default, off")]
+pub struct NotATier(String);
+
+impl std::str::FromStr for Tier {
+    type Err = NotATier;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        for tier in [Self::Strict, Self::Default, Self::Off] {
+            if tier.to_string() == value {
+                return Ok(tier);
+            }
+        }
+        Err(NotATier(value.to_owned()))
+    }
+}
+
 /// The observable network events the gateway records.
 ///
 /// Every egress path the sandbox has is represented here: anything the gateway cannot
 /// classify into one of these variants is refused by the packet filter and lands as
 /// [`AuditEvent::Blocked`], so an empty trail means no egress rather than lost egress.
+/// Under the `default` and `off` audit tiers the refusal is a rejection the client
+/// sees at once instead of a drop it waits out, and traffic a route can carry is
+/// relayed rather than refused — recorded as [`AuditEvent::Forwarded`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AuditEvent {
@@ -31,11 +99,18 @@ pub enum AuditEvent {
     Connect(Connect),
     /// A TLS handshake the gateway terminated and re-originated.
     Tls(TlsHandshake),
+    /// A TLS session the gateway read the client hello of and relayed untouched —
+    /// the `default` tier's record of a connection it never decrypted.
+    TlsSeen(TlsSeen),
     /// A complete HTTP request/response pair seen inside a proxied connection.
     Http(HttpExchange),
     /// Which network the gateway's own upstream traffic rides on, recorded when it
     /// changes — a tunnel raised, a tunnel lost, a fallback taken.
     Egress(Egress),
+    /// A packet the filter forwarded without inspection, because the audit tier does
+    /// not refuse what it cannot parse and the egress mode permits the route. The
+    /// payload went out unaudited by design; the attempt is still part of the trail.
+    Forwarded(Forwarded),
     /// Traffic the packet filter refused.
     Blocked(Blocked),
 }
@@ -112,6 +187,30 @@ pub struct TlsHandshake {
     pub alpn: Option<String>,
     /// SHA-256 fingerprint of the upstream leaf certificate, lowercase hex.
     pub upstream_cert_sha256: String,
+}
+
+/// A TLS session observed rather than terminated: what the client hello offered.
+///
+/// Everything in it is what the client declared — the gateway never sees the upstream
+/// certificate or the negotiated ALPN on a connection it relays end-to-end, so those
+/// fields belong to [`TlsHandshake`] alone.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TlsSeen {
+    /// Original destination the sandbox dialled.
+    pub destination: Endpoint,
+    /// Server name the client offered, absent when it offered none.
+    pub server_name: Option<String>,
+    /// ALPN protocols the client offered.
+    pub alpn: Vec<String>,
+}
+
+/// A packet forwarded without inspection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Forwarded {
+    /// Layer-4 protocol of the passed flow.
+    pub transport: Transport,
+    /// Destination the sandbox sent it to.
+    pub destination: Endpoint,
 }
 
 /// A full HTTP exchange observed inside a proxied connection.
@@ -200,4 +299,8 @@ pub enum BlockReason {
     /// The egress transport the session's policy requires is down, so the request was
     /// refused rather than let out unaudited.
     EgressUnavailable,
+    /// No route the session permits can carry the packet — UDP under a Tor-only
+    /// egress, or IPv6 anywhere. The packet is refused immediately; this is the
+    /// audit tier's fast refusal, not the strict tier's drop.
+    NoRoute,
 }

@@ -72,11 +72,16 @@ async fn resolve(
     sink: AuditSink,
 ) -> Result<()> {
     let started = Instant::now();
-    // Attributed before anything is forwarded, while the querying socket is still bound.
+    // Attributed before anything is forwarded, while the querying socket is still
+    // bound. Under the `off` tier no record is written, so the lookup is skipped.
     let SocketAddr::V4(source) = client else {
         return Err(GatewayError::NotIpv4 { peer: client });
     };
-    let sink = sink.attributed_to(owner_of::<Udp>(source).await?);
+    let sink = if sink.records_traffic() {
+        sink.attributed_to(owner_of::<Udp>(source).await?)
+    } else {
+        sink
+    };
 
     // The exchange crosses whatever route connections cross: a query that went around
     // the session's tunnel would name the machine it came from.
