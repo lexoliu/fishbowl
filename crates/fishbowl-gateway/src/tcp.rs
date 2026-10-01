@@ -189,9 +189,8 @@ async fn connect(
 /// destination did — telling that apart from an unreachable destination is what a
 /// fail-closed audit trail exists for.
 fn refusal_reason(error: &GatewayError) -> BlockReason {
-    let source = match error {
-        GatewayError::Socket { source, .. } | GatewayError::Tls { source, .. } => source,
-        _ => return BlockReason::UpstreamUnreachable,
+    let (GatewayError::Socket { source, .. } | GatewayError::Tls { source, .. }) = error else {
+        return BlockReason::UpstreamUnreachable;
     };
     if refused_by_egress(source) {
         BlockReason::EgressUnavailable
