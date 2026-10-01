@@ -131,7 +131,7 @@ mod tests {
         let frame = frame();
         assert!(frame.starts_with(RED), "the frame is drawn in red");
         assert!(frame.contains("R E D   T E A M   M O D E"));
-        assert!(frame.contains("IIIIII"), "the skull is in the box: {frame}");
+        assert!(frame.contains("████"), "the skull is in the box: {frame}");
         assert!(
             frame.contains("║") && frame.contains("═"),
             "the frame is drawn as a box: {frame}"
