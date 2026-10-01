@@ -108,6 +108,14 @@ fn event(event: &AuditEvent) -> String {
             exchange.request_bytes,
             exchange.elapsed_ms
         ),
+        AuditEvent::Egress(egress) => format!(
+            "egress route={}{}",
+            route(egress.route),
+            egress
+                .reason
+                .as_deref()
+                .map_or_else(String::new, |reason| format!(" ({reason})"))
+        ),
         AuditEvent::Blocked(blocked) => format!(
             "BLOCK  {} {} {}",
             transport(blocked.transport),
@@ -132,10 +140,22 @@ const fn transport(transport: Transport) -> &'static str {
     }
 }
 
+const fn route(route: fishbowl_audit::Route) -> &'static str {
+    match route {
+        fishbowl_audit::Route::Warp => "warp",
+        fishbowl_audit::Route::Tor => "tor",
+        fishbowl_audit::Route::Direct => "direct",
+        fishbowl_audit::Route::Down => "down",
+    }
+}
+
 const fn reason(reason: BlockReason) -> &'static str {
     match reason {
         BlockReason::UnauditableTransport => "the transport cannot be audited in cleartext",
         BlockReason::NoHandler => "no transparent handler for the destination port",
         BlockReason::UpstreamUnreachable => "the upstream connection failed",
+        BlockReason::EgressUnavailable => {
+            "the required egress transport is down; the connection was refused"
+        }
     }
 }

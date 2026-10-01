@@ -8,6 +8,7 @@ use std::{
 
 use anyhow::{Context as _, Result};
 use fishbowl_agents::SandboxEndpoint;
+use fishbowl_egress::Mode;
 use fishbowl_runtime::{Arch, ContainerName, ImageReference};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -128,6 +129,14 @@ pub struct SessionRecord {
     pub work_dir: PathBuf,
     /// Host directory mounted read-only as the sample source, when one was given.
     pub samples: Option<PathBuf>,
+    /// Which network the session's audited egress rides on.
+    ///
+    /// Settled when the session is created: a machine's environment cannot be re-plumbed
+    /// after the fact, so a different mode means a different session. Records written
+    /// before the egress layer existed get [`Mode::Direct`] — what those sessions still
+    /// do, since their image's gateway has no egress to configure.
+    #[serde(default = "egress_before_the_egress_layer")]
+    pub egress: Mode,
     /// Private key the host authenticates with.
     pub identity_file: PathBuf,
     /// When the session was created.
@@ -138,6 +147,12 @@ pub struct SessionRecord {
     /// first, and one untouched for long enough goes whether the host is short of room or
     /// not.
     pub last_used: Timestamp,
+}
+
+/// The egress mode sessions had before egress modes existed: their image's gateway
+/// connects out directly, and only directly.
+fn egress_before_the_egress_layer() -> Mode {
+    Mode::Direct
 }
 
 impl SessionRecord {
@@ -245,6 +260,7 @@ mod tests {
             researcher: "researcher".to_owned(),
             work_dir: PathBuf::from("/work"),
             samples: None,
+            egress: Mode::Auto,
             identity_file: PathBuf::from("/keys/a3f19c"),
             created_at: Timestamp::now(),
             last_used: Timestamp::now(),

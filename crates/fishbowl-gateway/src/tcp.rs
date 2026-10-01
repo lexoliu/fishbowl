@@ -7,6 +7,7 @@
 use std::{net::SocketAddr, sync::Arc, time::Instant};
 
 use fishbowl_audit::{AuditEvent, BlockReason, Blocked, Connect, Endpoint, Transport};
+use fishbowl_egress::{Egress, Upstream};
 use tokio::{
     io::{AsyncRead, AsyncWrite, copy_bidirectional},
     net::{TcpListener, TcpStream},
@@ -27,7 +28,12 @@ use crate::{
 /// # Errors
 /// Fails only when the listening socket itself breaks; a failure on one connection is
 /// recorded and the loop continues.
-pub async fn serve(listener: TcpListener, bridge: Arc<TlsBridge>, sink: AuditSink) -> Result<()> {
+pub async fn serve(
+    listener: TcpListener,
+    bridge: Arc<TlsBridge>,
+    egress: Arc<Egress>,
+    sink: AuditSink,
+) -> Result<()> {
     loop {
         let (stream, peer) = listener
             .accept()
@@ -37,9 +43,10 @@ pub async fn serve(listener: TcpListener, bridge: Arc<TlsBridge>, sink: AuditSin
                 source,
             })?;
         let bridge = Arc::clone(&bridge);
+        let egress = Arc::clone(&egress);
         let sink = sink.clone();
         tokio::spawn(async move {
-            if let Err(error) = handle(stream, peer, bridge, sink).await {
+            if let Err(error) = handle(stream, peer, bridge, egress, sink).await {
                 tracing::warn!(%error, %peer, "a redirected connection ended in an error");
             }
         });
@@ -50,6 +57,7 @@ async fn handle(
     stream: TcpStream,
     peer: SocketAddr,
     bridge: Arc<TlsBridge>,
+    egress: Arc<Egress>,
     sink: AuditSink,
 ) -> Result<()> {
     let destination = original_destination(&stream)?;
@@ -72,10 +80,10 @@ async fn handle(
         })?;
 
     if looks_like_tls(probed.prefix()) {
-        return intercept_tls(probed, peer, destination, endpoint, bridge, sink).await;
+        return intercept_tls(probed, peer, destination, endpoint, bridge, egress, sink).await;
     }
 
-    let Some(upstream) = connect(destination, &endpoint, &sink).await? else {
+    let Some(upstream) = connect(destination, &egress, &endpoint, &sink).await? else {
         return Ok(());
     };
     if looks_like_http(probed.prefix()) {
@@ -101,15 +109,16 @@ async fn intercept_tls(
     destination: SocketAddr,
     endpoint: Endpoint,
     bridge: Arc<TlsBridge>,
+    egress: Arc<Egress>,
     sink: AuditSink,
 ) -> Result<()> {
-    let intercepted = match bridge.intercept(probed, peer, destination).await {
+    let intercepted = match bridge.intercept(probed, peer, destination, &egress).await {
         Ok(intercepted) => intercepted,
         Err(error) => {
             sink.record(AuditEvent::Blocked(Blocked {
                 transport: Transport::Tcp,
                 destination: endpoint,
-                reason: BlockReason::UpstreamUnreachable,
+                reason: refusal_reason(&error),
             }))
             .await;
             return Err(error);
@@ -145,25 +154,56 @@ async fn intercept_tls(
     }
 }
 
-/// Opens the upstream connection, recording a refusal if the destination is unreachable.
+/// Opens the upstream connection on the session's egress route, recording a refusal if
+/// the destination is unreachable — or, under a strict egress mode, refused while the
+/// tunnel that must carry it is down.
 async fn connect(
     destination: SocketAddr,
+    egress: &Egress,
     endpoint: &Endpoint,
     sink: &AuditSink,
-) -> Result<Option<TcpStream>> {
-    match TcpStream::connect(destination).await {
+) -> Result<Option<Upstream>> {
+    match egress.connect(destination).await {
         Ok(stream) => Ok(Some(stream)),
         Err(error) => {
             tracing::debug!(%error, %destination, "the destination refused the connection");
             sink.record(AuditEvent::Blocked(Blocked {
                 transport: Transport::Tcp,
                 destination: endpoint.clone(),
-                reason: BlockReason::UpstreamUnreachable,
+                reason: if refused_by_egress(&error) {
+                    BlockReason::EgressUnavailable
+                } else {
+                    BlockReason::UpstreamUnreachable
+                },
             }))
             .await;
             Ok(None)
         }
     }
+}
+
+/// Why an upstream attempt failed, for the refusal record.
+///
+/// The egress layer reports a down transport under a strict mode as
+/// `ConnectionAborted`: the connection was refused by policy, not by anything the
+/// destination did — telling that apart from an unreachable destination is what a
+/// fail-closed audit trail exists for.
+fn refusal_reason(error: &GatewayError) -> BlockReason {
+    let source = match error {
+        GatewayError::Socket { source, .. } | GatewayError::Tls { source, .. } => source,
+        _ => return BlockReason::UpstreamUnreachable,
+    };
+    if refused_by_egress(source) {
+        BlockReason::EgressUnavailable
+    } else {
+        BlockReason::UpstreamUnreachable
+    }
+}
+
+/// Whether `error` is the egress layer refusing a connection rather than the
+/// destination doing so.
+fn refused_by_egress(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::ConnectionAborted
 }
 
 /// Relays a connection the gateway cannot parse, accounting for it by volume.

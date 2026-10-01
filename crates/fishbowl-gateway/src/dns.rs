@@ -4,9 +4,14 @@
 //! else, so the gateway answers every query itself: it forwards the wire message upstream
 //! unchanged and records both the question and the answers.
 
-use std::{net::SocketAddr, sync::Arc, time::Instant};
+use std::{
+    net::{SocketAddr, SocketAddrV4},
+    sync::Arc,
+    time::Instant,
+};
 
 use fishbowl_audit::{AuditEvent, DnsAnswer, DnsQuery, Endpoint};
+use fishbowl_egress::Egress;
 use hickory_proto::op::Message;
 use tokio::{net::UdpSocket, time::Duration};
 
@@ -19,14 +24,22 @@ use crate::{
 /// Largest DNS message the gateway relays; anything larger belongs on TCP.
 const MAX_MESSAGE: usize = 4096;
 
-/// How long the upstream resolver is given to answer.
-const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long an exchange with the upstream resolver may take before it is abandoned.
+///
+/// The transports pace themselves — five seconds over WARP, fifteen over Tor — so this
+/// bound is the wedge guard behind them, not the real pacing.
+const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Answers redirected DNS queries until the socket fails.
 ///
 /// # Errors
 /// Fails only when the listening socket itself breaks.
-pub async fn serve(socket: UdpSocket, upstream: SocketAddr, sink: AuditSink) -> Result<()> {
+pub async fn serve(
+    socket: UdpSocket,
+    upstream: SocketAddrV4,
+    egress: Arc<Egress>,
+    sink: AuditSink,
+) -> Result<()> {
     let socket = Arc::new(socket);
     let mut buffer = vec![0_u8; MAX_MESSAGE];
     loop {
@@ -40,9 +53,10 @@ pub async fn serve(socket: UdpSocket, upstream: SocketAddr, sink: AuditSink) -> 
                 })?;
         let query = buffer[..length].to_vec();
         let socket = Arc::clone(&socket);
+        let egress = Arc::clone(&egress);
         let sink = sink.clone();
         tokio::spawn(async move {
-            if let Err(error) = resolve(&socket, client, upstream, query, sink).await {
+            if let Err(error) = resolve(&socket, client, upstream, egress, query, sink).await {
                 tracing::warn!(%error, %client, "a DNS query could not be answered");
             }
         });
@@ -52,7 +66,8 @@ pub async fn serve(socket: UdpSocket, upstream: SocketAddr, sink: AuditSink) -> 
 async fn resolve(
     socket: &UdpSocket,
     client: SocketAddr,
-    upstream: SocketAddr,
+    upstream: SocketAddrV4,
+    egress: Arc<Egress>,
     query: Vec<u8>,
     sink: AuditSink,
 ) -> Result<()> {
@@ -62,33 +77,20 @@ async fn resolve(
         return Err(GatewayError::NotIpv4 { peer: client });
     };
     let sink = sink.attributed_to(owner_of::<Udp>(source).await?);
-    let outbound =
-        UdpSocket::bind(("0.0.0.0", 0))
-            .await
-            .map_err(|source| GatewayError::Socket {
-                context: "opening a socket towards the upstream resolver",
-                source,
-            })?;
-    outbound
-        .send_to(&query, upstream)
-        .await
-        .map_err(|source| GatewayError::Socket {
-            context: "forwarding a DNS query upstream",
-            source,
-        })?;
 
-    let mut buffer = vec![0_u8; MAX_MESSAGE];
-    let length = tokio::time::timeout(UPSTREAM_TIMEOUT, outbound.recv(&mut buffer))
+    // The exchange crosses whatever route connections cross: a query that went around
+    // the session's tunnel would name the machine it came from.
+    let answer = tokio::time::timeout(UPSTREAM_TIMEOUT, egress.dns_exchange(upstream, &query))
         .await
         .map_err(|_| GatewayError::Socket {
             context: "waiting for the upstream resolver",
             source: std::io::Error::from(std::io::ErrorKind::TimedOut),
         })?
         .map_err(|source| GatewayError::Socket {
-            context: "reading the upstream resolver's answer",
+            context: "exchanging a DNS query with the upstream resolver",
             source,
         })?;
-    let answer = &buffer[..length];
+    let answer = answer.as_slice();
 
     socket
         .send_to(answer, client)
@@ -114,7 +116,7 @@ async fn resolve(
                 })
                 .collect(),
             upstream: Some(Endpoint {
-                ip: upstream.ip(),
+                ip: (*upstream.ip()).into(),
                 port: upstream.port(),
             }),
             elapsed_ms,

@@ -15,6 +15,7 @@ dist = false
 
 [dependencies]
 fishbowl-audit = { workspace = true, features = ["io"] }
+fishbowl-egress = { workspace = true, features = ["tor", "warp"] }
 anyhow.workspace = true
 clap.workspace = true
 hickory-proto.workspace = true

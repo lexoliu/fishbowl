@@ -79,11 +79,12 @@ fn label(record: &SessionRecord, live: &[ContainerState], now: Timestamp) -> Str
         |path| path.display().to_string(),
     );
     format!(
-        "{:<8}{:<10}{:<12}{:<8}{samples}",
+        "{:<8}{:<10}{:<12}{:<8}{:<8}{samples}",
         record.id,
         state,
         describe_age(record.idle_for(now)),
-        record.arch
+        record.arch,
+        record.egress
     )
 }
 
@@ -109,6 +110,7 @@ mod tests {
             researcher: "researcher".to_owned(),
             work_dir: PathBuf::from("/work"),
             samples: None,
+            egress: fishbowl_egress::Mode::Auto,
             identity_file: PathBuf::from("/keys/id"),
             created_at: Timestamp::now(),
             last_used: Timestamp::now(),

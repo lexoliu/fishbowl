@@ -189,6 +189,7 @@ mod tests {
                 "fishbowl-audit".to_owned(),
                 "fishbowl-courier".to_owned(),
                 "fishbowl-creds".to_owned(),
+                "fishbowl-egress".to_owned(),
                 "fishbowl-gateway".to_owned(),
             ]),
             "the host CLI, the agents crate, the image crate and the runtime are copied \
