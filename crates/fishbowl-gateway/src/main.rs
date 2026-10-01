@@ -17,9 +17,10 @@ mod redirect;
 mod stream;
 mod tcp;
 mod tls;
+mod udp;
 
 use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddrV4},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddrV4},
     path::PathBuf,
     sync::Arc,
 };
@@ -88,6 +89,9 @@ struct Serve {
     /// Port redirected DNS queries arrive on.
     #[arg(long)]
     dns_port: u16,
+    /// Port redirected datagrams that are not DNS arrive on — the UDP relay.
+    #[arg(long)]
+    udp_port: u16,
     /// NFLOG group the packet filter reports refused packets on.
     #[arg(long)]
     nflog_group: u16,
@@ -176,27 +180,24 @@ async fn serve(arguments: Serve) -> anyhow::Result<()> {
         Tier::Off => Inspection::Pass,
     };
 
-    // Both sockets bind the loopback address rather than a wildcard, because that is the
-    // address the packet filter's redirection rewrites the sandbox's traffic to. It also
-    // has to be the address replies leave from: a wildcard-bound socket would answer a
-    // redirected DNS query from the sandbox's own interface address, conntrack would not
-    // recognise that as the reply to what it redirected, and the resolver's answer would
-    // never be translated back to the address the client asked. Binding the loopback
-    // address makes the reply's source correct by construction, and keeps the gateway
-    // unreachable from anywhere but inside this sandbox.
-    let proxy = TcpListener::bind((Ipv4Addr::LOCALHOST, arguments.proxy_port))
+    let [proxy, proxy6] = bind_tcp(arguments.proxy_port)
         .await
         .context("binding the transparent proxy port")?;
-    let torsion = TcpListener::bind((Ipv4Addr::LOCALHOST, arguments.torsion_port))
+    let [torsion, torsion6] = bind_tcp(arguments.torsion_port)
         .await
         .context("binding the torsion proxy port")?;
-    let resolver = UdpSocket::bind((Ipv4Addr::LOCALHOST, arguments.dns_port))
-        .await
-        .context("binding the intercepting resolver port")?;
-    // A v6 resolver could never answer — the packet filter drops IPv6 outright — so
-    // one is refused here rather than discovered failing at runtime.
+    let resolver = vec![
+        UdpSocket::bind((Ipv4Addr::LOCALHOST, arguments.dns_port))
+            .await
+            .context("binding the intercepting resolver port")?,
+        UdpSocket::bind((Ipv6Addr::LOCALHOST, arguments.dns_port))
+            .await
+            .context("binding the IPv6 resolver port")?,
+    ];
+    // A v6 resolver could never be dialled — the gateway's bootstrap traffic is v4 —
+    // so one is refused here rather than discovered failing at runtime.
     let IpAddr::V4(resolver_address) = arguments.upstream_resolver else {
-        anyhow::bail!("--upstream-resolver must be an IPv4 address; the egress policy drops IPv6");
+        anyhow::bail!("--upstream-resolver must be an IPv4 address");
     };
     let upstream = SocketAddrV4::new(resolver_address, 53);
 
@@ -236,7 +237,21 @@ async fn serve(arguments: Serve) -> anyhow::Result<()> {
             Leg::Base
         ),
         tcp::serve(
+            proxy6,
+            inspection.clone(),
+            Arc::clone(&egress),
+            sink.clone(),
+            Leg::Base
+        ),
+        tcp::serve(
             torsion,
+            inspection.clone(),
+            Arc::clone(&egress),
+            sink.clone(),
+            Leg::Torsion
+        ),
+        tcp::serve(
+            torsion6,
             inspection,
             Arc::clone(&egress),
             sink.clone(),
@@ -245,6 +260,12 @@ async fn serve(arguments: Serve) -> anyhow::Result<()> {
         dns::serve(
             resolver,
             upstream,
+            Arc::clone(&egress),
+            sink.clone(),
+            arguments.torsion_uid
+        ),
+        udp::serve(
+            arguments.udp_port,
             egress,
             sink.clone(),
             arguments.torsion_uid
@@ -254,6 +275,24 @@ async fn serve(arguments: Serve) -> anyhow::Result<()> {
     drop(writer);
     result.context("the audit gateway stopped")?;
     Ok(())
+}
+
+/// Binds one TCP listener per address family on `port`.
+///
+/// Every socket binds the loopback address rather than a wildcard, because that is
+/// the address the packet filter's redirection rewrites the sandbox's traffic to —
+/// `127.0.0.1` for IPv4, `::1` for IPv6. It also has to be the address replies
+/// leave from: a wildcard-bound socket would answer a redirected packet from the
+/// sandbox's own interface address, conntrack would not recognise that as the
+/// reply to what it redirected, and the answer would never be translated back to
+/// the address the client asked. Binding the loopback address makes the reply's
+/// source correct by construction, and keeps the gateway unreachable from anywhere
+/// but inside this sandbox.
+async fn bind_tcp(port: u16) -> anyhow::Result<[TcpListener; 2]> {
+    Ok([
+        TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await?,
+        TcpListener::bind((Ipv6Addr::LOCALHOST, port)).await?,
+    ])
 }
 
 /// Appends an egress record to the trail each time the route upstream traffic rides

@@ -284,6 +284,28 @@ impl Transport {
             }
         }
     }
+
+    /// Opens a UDP session through the tunnel to `destination`.
+    ///
+    /// # Errors
+    /// `Tor` fails outright — the protocol carries no datagrams — and any transport
+    /// fails while the tunnel is down.
+    fn udp_connect(&self, destination: SocketAddr) -> io::Result<UdpUpstream> {
+        match self {
+            #[cfg(feature = "warp")]
+            Self::Warp(stack) => stack.udp_connect(destination).map(UdpUpstream::Warp),
+            #[cfg(feature = "tor")]
+            Self::Tor(_) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Tor carries no datagrams",
+            )),
+            #[allow(unreachable_patterns)]
+            _ => {
+                let _ = destination;
+                unreachable!("a transport was raised with no transport compiled in")
+            }
+        }
+    }
 }
 
 /// A connection the gateway opened upstream, on whichever transport was in effect.
@@ -347,6 +369,44 @@ impl AsyncWrite for Upstream {
             Self::Warp(stream) => Pin::new(stream).poll_shutdown(context),
             #[cfg(feature = "tor")]
             Self::Tor(stream) => Pin::new(stream).poll_shutdown(context),
+        }
+    }
+}
+
+/// A UDP session the relay opened upstream, on whichever transport was in effect.
+///
+/// Sessions are `connect`-ed on both sides: a datagram is either sent or received
+/// from the one remote, so the relay never has to name a peer per packet.
+pub enum UdpUpstream {
+    /// A datagram socket bound on the default route.
+    Direct(tokio::net::UdpSocket),
+    /// A session through the WARP tunnel.
+    #[cfg(feature = "warp")]
+    Warp(warp::UdpSession),
+}
+
+impl UdpUpstream {
+    /// Sends `data` to the session's remote.
+    ///
+    /// # Errors
+    /// Fails when the socket or the tunnel is gone.
+    pub async fn send(&self, data: &[u8]) -> io::Result<()> {
+        match self {
+            Self::Direct(socket) => socket.send(data).await.map(|_| ()),
+            #[cfg(feature = "warp")]
+            Self::Warp(session) => session.send(data),
+        }
+    }
+
+    /// Waits for the remote's next datagram.
+    ///
+    /// # Errors
+    /// Fails when the socket or the tunnel is gone.
+    pub async fn recv(&self, buffer: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::Direct(socket) => socket.recv(buffer).await,
+            #[cfg(feature = "warp")]
+            Self::Warp(session) => session.recv(buffer).await,
         }
     }
 }
@@ -498,6 +558,30 @@ impl Egress {
             Verdict::Unavailable(reason) if self.permits_fallback(leg) => {
                 tracing::debug!(%resolver, %reason, "egress tunnel is unavailable; DNS goes direct");
                 direct_dns(resolver, query).await
+            }
+            Verdict::Unavailable(reason) => Err(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                format!("{} egress is unavailable: {reason}", leg.label(self.mode)),
+            )),
+        }
+    }
+
+    /// Opens a UDP session to `destination` on the route `mode` currently allows `leg`
+    /// to take — the relay's per-flow twin of [`Self::connect`].
+    ///
+    /// # Errors
+    /// Fails when no route can carry the datagrams: the `torsion` leg and `tor` mode
+    /// refuse outright since Tor transports no UDP, and a strict mode whose tunnel is
+    /// down refuses rather than leak the machine's address.
+    pub async fn udp_connect(&self, destination: SocketAddr, leg: Leg) -> io::Result<UdpUpstream> {
+        if !is_public(destination.ip()) {
+            return direct_udp(destination).await.map(UdpUpstream::Direct);
+        }
+        match self.verdict(leg).await {
+            Verdict::Up(transport) => transport.udp_connect(destination),
+            Verdict::Unavailable(reason) if self.permits_fallback(leg) => {
+                tracing::debug!(%destination, %reason, "egress tunnel is unavailable; UDP goes direct");
+                direct_udp(destination).await.map(UdpUpstream::Direct)
             }
             Verdict::Unavailable(reason) => Err(io::Error::new(
                 io::ErrorKind::ConnectionAborted,
@@ -688,6 +772,17 @@ async fn direct_dns(resolver: SocketAddrV4, query: &[u8]) -> io::Result<Vec<u8>>
     let length = socket.recv(&mut answer).await?;
     answer.truncate(length);
     Ok(answer)
+}
+
+/// A connected datagram socket on the default route, in the destination's family.
+async fn direct_udp(destination: SocketAddr) -> io::Result<tokio::net::UdpSocket> {
+    let socket = tokio::net::UdpSocket::bind(match destination {
+        SocketAddr::V4(_) => SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, 0)),
+        SocketAddr::V6(_) => SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 0)),
+    })
+    .await?;
+    socket.connect(destination).await?;
+    Ok(socket)
 }
 
 /// Raises transports in `preference` order, forever, publishing each verdict to `link`.

@@ -23,8 +23,9 @@ present only while the agent runs. Samples are detonated under a third account n
 credential is ever written for, so a sample that reads every file it can reach still finds
 none.
 
-**Every TCP connection and DNS question crosses the gateway; how much of it is
-inspected is your call.** Apart from the detonation account's — whose traffic is cut
+**Every connection, datagram and DNS question crosses the gateway — both address
+families of them; how much is inspected is your call.** Apart from the detonation
+account's — whose traffic is cut
 entirely — traffic is redirected by uid to an in-guest gateway, and the session's audit
 tier (`--audit`), settled when the session is created, says what it does with it:
 
@@ -52,9 +53,12 @@ connections are refused rather than sent out under your address — and `direct`
 for no tunnel at all. Both transports live inside the gateway's own process — a
 userspace WireGuard session for WARP, an Arti client for Tor — so the packet filter
 never changes, and every transition between routes is itself written to the audit
-trail. DNS crosses the same route, and destinations no exit could ever reach — the
-machine's own network, private and local address space — always go direct, whatever
-the mode.
+trail. DNS crosses the same route, and where a route can carry datagrams the relay
+moves the rest of UDP — QUIC included — across it transparently; where it cannot
+(Tor carries none, and `strict` keeps QUIC off an unauditable transport) a
+datagram is refused outright. Destinations no exit could ever reach — the
+machine's own network, private and local address space — always go direct,
+whatever the mode.
 
 **Red team mode.** `--redteam` opens a session for an engagement you are authorized
 for. Before anything is started, the terminal asks you to attest that authorization —
@@ -63,9 +67,10 @@ every later opening of the session. Inside, the agent is briefed that the engage
 is authorized and tasked to operate offensively. The session's base egress is the WARP
 tunnel — strict, so the machine's own address is never an exit — and Tor rides beside
 it as a per-command leg rather than as the floor: run a target-bound command through
-`torsion` (`torsion nmap -sV target`) and its TCP and DNS are carried over Tor and
-refused while Tor is down, while the agent's own tooling and control traffic stay on
-the fast path. The audit trail still sees everything, including which leg each record
+`torsion` (`torsion nmap -sV target`) and its TCP and DNS are carried over Tor,
+refused while Tor is down and its UDP refused always — Tor transports no
+datagrams — while the agent's own tooling and control traffic stay on the fast
+path. The audit trail still sees everything, including which leg each record
 rode.
 
 ## Install

@@ -52,6 +52,7 @@ setpriv --reuid="${GATEWAY_USER}" --regid="${GATEWAY_USER}" --clear-groups \
     --torsion-port {{ torsion_port }} \
     --torsion-uid {{ torsion_uid }} \
     --dns-port {{ dns_port }} \
+    --udp-port {{ udp_port }} \
     --nflog-group {{ nflog_group }} \
     --upstream-resolver "${FISHBOWL_RESOLVER}" \
     --egress "${FISHBOWL_EGRESS:-auto}" \

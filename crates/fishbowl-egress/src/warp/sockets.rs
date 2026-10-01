@@ -256,7 +256,8 @@ impl Drop for Tcp {
     }
 }
 
-/// A UDP socket through the tunnel — used for DNS exchanges, one query at a time.
+/// A UDP socket through the tunnel — used for DNS exchanges one query at a time,
+/// and by the relay as a connected session whose remote never changes.
 pub struct Udp {
     sockets: Arc<Mutex<SocketSet<'static>>>,
     handle: SocketHandle,
@@ -290,7 +291,7 @@ impl Udp {
         let port = ephemeral_port(&set);
         socket
             .bind(port)
-            .map_err(|error| io::Error::other(format!("binding a tunnel DNS socket: {error}")))?;
+            .map_err(|error| io::Error::other(format!("binding a tunnel UDP socket: {error}")))?;
         let handle = set.add(socket);
         drop(set);
         Ok(Self {
@@ -300,6 +301,61 @@ impl Udp {
             retired,
             dead,
         })
+    }
+
+    /// Sends `data` to `endpoint` through the tunnel.
+    ///
+    /// # Errors
+    /// Fails when the packet buffer is full — the caller's pacing is the backpressure.
+    pub fn send_to(&self, endpoint: IpEndpoint, data: &[u8]) -> io::Result<()> {
+        self.dead
+            .reason()
+            .map_or(Ok(()), |_| Err(self.dead.error()))?;
+        {
+            let mut set = socket_set(&self.sockets);
+            set.get_mut::<udp::Socket>(self.handle)
+                .send_slice(data, endpoint)
+                .map_err(|error| {
+                    io::Error::other(format!("sending a datagram through the tunnel: {error}"))
+                })?;
+        }
+        self.wake.notify_one();
+        Ok(())
+    }
+
+    /// Waits for the next datagram `from` sends.
+    ///
+    /// Datagrams from other remotes are consumed and ignored: the socket was bound
+    /// unconnected so the kernel analogue — a connected socket's source filter — is
+    /// applied here instead.
+    ///
+    /// # Errors
+    /// Fails only when the tunnel dies while waiting.
+    pub async fn recv_from(&self, from: IpEndpoint, buffer: &mut [u8]) -> io::Result<usize> {
+        std::future::poll_fn(|context| {
+            self.dead.check(context)?;
+            let mut set = socket_set(&self.sockets);
+            let socket = set.get_mut::<udp::Socket>(self.handle);
+            loop {
+                match socket.recv_slice(buffer) {
+                    Ok((length, metadata)) if metadata.endpoint == from => {
+                        return Poll::Ready(Ok(length));
+                    }
+                    // A datagram from elsewhere is not this session's to hold.
+                    Ok(_) => {}
+                    Err(udp::RecvError::Exhausted) => {
+                        socket.register_recv_waker(context.waker());
+                        return Poll::Pending;
+                    }
+                    Err(error) => {
+                        return Poll::Ready(Err(io::Error::other(format!(
+                            "receiving a datagram through the tunnel: {error}"
+                        ))));
+                    }
+                }
+            }
+        })
+        .await
     }
 
     /// Sends `query` to `resolver` and returns the answer it gives.

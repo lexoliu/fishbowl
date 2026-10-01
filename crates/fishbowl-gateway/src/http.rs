@@ -15,7 +15,7 @@ use std::{
     time::Instant,
 };
 
-use fishbowl_audit::{AuditEvent, Connect, Endpoint, HttpExchange};
+use fishbowl_audit::{AuditEvent, Connect, Endpoint, HttpExchange, Transport};
 use hyper::{
     Request, Response, StatusCode,
     body::{Body, Bytes, Frame, Incoming, SizeHint},
@@ -263,6 +263,7 @@ fn splice_upgrade(
             Ok((bytes_out, bytes_in)) => {
                 let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
                 sink.record(AuditEvent::Connect(Connect {
+                    transport: Transport::Tcp,
                     destination,
                     resolved_from: None,
                     bytes_out,

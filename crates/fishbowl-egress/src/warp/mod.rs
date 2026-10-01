@@ -10,7 +10,7 @@ mod driver;
 mod registration;
 mod sockets;
 
-pub use sockets::Tcp;
+pub use sockets::{Tcp, Udp};
 
 use std::{
     io,
@@ -173,6 +173,27 @@ impl Stack {
         Ok(tcp)
     }
 
+    /// Opens a UDP session through the tunnel to `destination`.
+    ///
+    /// Unlike TCP there is no handshake to wait out: the returned socket sends as soon
+    /// as the driver is alive and receives only `destination`'s datagrams.
+    ///
+    /// # Errors
+    /// Fails when the tunnel is down.
+    pub fn udp_connect(&self, destination: SocketAddr) -> io::Result<UdpSession> {
+        self.check_alive()?;
+        let socket = sockets::Udp::bind(
+            Arc::clone(&self.sockets),
+            Arc::clone(&self.wake),
+            Arc::clone(&self.retired),
+            Arc::clone(&self.dead),
+        )?;
+        Ok(UdpSession {
+            socket,
+            remote: IpEndpoint::from(destination),
+        })
+    }
+
     /// Relays one DNS wire message through the tunnel over UDP and returns the answer.
     ///
     /// # Errors
@@ -186,6 +207,31 @@ impl Stack {
             Arc::clone(&self.dead),
         )?;
         udp.exchange(resolver, query).await
+    }
+}
+
+/// A UDP session through the tunnel, connected to one remote: what the relay holds
+/// for one client flow.
+pub struct UdpSession {
+    socket: Udp,
+    remote: IpEndpoint,
+}
+
+impl UdpSession {
+    /// Sends `data` to the session's remote.
+    ///
+    /// # Errors
+    /// Fails when the tunnel is down or the packet buffer is full.
+    pub fn send(&self, data: &[u8]) -> io::Result<()> {
+        self.socket.send_to(self.remote, data)
+    }
+
+    /// Waits for the remote's next datagram.
+    ///
+    /// # Errors
+    /// Fails only when the tunnel dies while waiting.
+    pub async fn recv(&self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.socket.recv_from(self.remote, buffer).await
     }
 }
 

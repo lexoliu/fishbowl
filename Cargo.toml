@@ -63,7 +63,7 @@ jiff = { version = "0.2", features = ["serde"] }
 netlink-packet-core = "0.9"
 netlink-packet-netfilter = "0.4"
 netlink-sys = { version = "0.9", features = ["tokio_socket"] }
-nix = { version = "0.30", features = ["net", "socket"] }
+nix = { version = "0.30", features = ["net", "socket", "uio"] }
 procfs = "0.17"
 rcgen = { version = "0.14", default-features = false, features = ["pem", "ring", "x509-parser"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
