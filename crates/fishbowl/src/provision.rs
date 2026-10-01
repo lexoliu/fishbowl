@@ -13,6 +13,7 @@ use std::{
 };
 
 use anyhow::{Context as _, Result, bail};
+use fishbowl_audit::{AuditEvent, AuditRecord, Route as AuditRoute};
 use fishbowl_egress::Mode;
 use fishbowl_runtime::{
     Arch, Capability, ContainerName, ContainerSpec, ContainerState, ImageReference, Mount,
@@ -35,6 +36,15 @@ const READY_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// How often readiness is re-checked while waiting.
 const READY_INTERVAL: Duration = Duration::from_millis(500);
+
+/// How long a strict-mode session waits for the machine's gateway to report which
+/// route its egress takes.
+///
+/// The report is written as the gateway starts, before it serves a connection —
+/// a machine that answered sshd without one has a gateway that predates the egress
+/// layer, and no wait will change that. The bound covers writer lag, not a second
+/// chance.
+const EGRESS_PROOF_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How many identifiers are drawn before giving up on finding an unused one.
 ///
@@ -198,6 +208,7 @@ async fn create(host: &Host, attach: &cli::Attach) -> Result<Session> {
         .context("creating the session's machine")?;
 
     let address = wait_until_reachable(host, &machine.name, layout.ssh_port).await?;
+    prove_egress(host, &machine.name, egress).await?;
     let now = Timestamp::now();
     let record = SessionRecord {
         id,
@@ -304,6 +315,7 @@ async fn resume(host: &Host, attach: &cli::Attach, mut record: SessionRecord) ->
     }
 
     let address = wait_until_reachable(host, &name, record.ssh_port).await?;
+    prove_egress(host, &name, record.egress).await?;
     record.last_used = Timestamp::now();
     host.store(&record).await?;
 
@@ -475,4 +487,219 @@ async fn accepts(address: SocketAddr) -> bool {
         tokio::time::timeout(READY_INTERVAL, tokio::net::TcpStream::connect(address)).await,
         Ok(Ok(_))
     )
+}
+
+/// Waits for the machine's gateway to prove it enforces the egress mode the session
+/// was given.
+///
+/// The mode reaches the guest as a request — `FISHBOWL_EGRESS`, read by the
+/// entrypoint — and an image that predates the egress layer has nothing that reads
+/// it: its gateway still audits and still answers, but connects out under the
+/// machine's own address, which for a strict mode is the one outcome that must
+/// never silently happen. The guest's own trail is the evidence asked for: a
+/// gateway that has the layer reports its route from startup, so a trail with no
+/// egress record is a gateway that cannot enforce one, and a record naming a route
+/// the mode cannot produce is enforcement gone wrong rather than absent.
+///
+/// A mode that permits direct fallback needs no proof — the machine's own address
+/// is already a route it admits.
+///
+/// # Errors
+/// Fails when the deadline passes with no egress record, or a record reports a
+/// route the mode can never produce; the machine is then stopped through the
+/// lease the caller already holds.
+async fn prove_egress(host: &Host, name: &ContainerName, mode: Mode) -> Result<()> {
+    if mode.permits_fallback() {
+        return Ok(());
+    }
+    let layout = host.layout();
+    // `|| true` folds a missing trail and an empty match into the same answer:
+    // no proof yet. Both end in refusal either way.
+    let probe = format!(
+        "grep '\"kind\":\"egress\"' {} || true",
+        crate::command::shell_quote(&layout.audit_trail().display().to_string())
+    );
+    let deadline = tokio::time::Instant::now() + EGRESS_PROOF_TIMEOUT;
+    loop {
+        let output = host
+            .runtime()
+            .exec_as(name, &layout.gateway.name, &["sh", "-c", &probe])
+            .await
+            .context("asking the machine's gateway for its egress route")?;
+        match egress_proof(&output.stdout, mode) {
+            Proof::Enforced => return Ok(()),
+            Proof::Leaked(route) => bail!(
+                "session {name} asked for `--egress {mode}`, but its gateway reported \
+                 `route={route}` — a route the mode can never produce. The image's \
+                 egress enforcement is broken, so the session is not opened"
+            ),
+            Proof::Silent if tokio::time::Instant::now() >= deadline => bail!(
+                "session {name} asked for `--egress {mode}`, but its gateway never \
+                 reported the route its traffic takes: the image predates the egress \
+                 layer, and the session would run under the machine's own address. \
+                 The session is not opened — it needs an image built from sources \
+                 that carry the layer, so run from a checkout or a release that \
+                 has one"
+            ),
+            Proof::Silent => tokio::time::sleep(READY_INTERVAL).await,
+        }
+    }
+}
+
+/// What the egress records in a trail excerpt prove under `mode`.
+enum Proof {
+    /// At least one record, every one naming a route `mode` can produce.
+    Enforced,
+    /// A record named a route `mode` can never produce — under a strict mode that
+    /// is the machine's own address showing up in traffic, with a paper trail.
+    Leaked(AuditRoute),
+    /// No egress record at all: the gateway has no egress layer to report one.
+    Silent,
+}
+
+/// Reads every egress record `output` (grep's stdout over the trail) holds.
+fn egress_proof(output: &str, mode: Mode) -> Proof {
+    let mut reported = false;
+    for line in output.lines() {
+        let Ok(record) = serde_json::from_str::<AuditRecord>(line) else {
+            continue;
+        };
+        let AuditEvent::Egress(egress) = record.event else {
+            continue;
+        };
+        reported = true;
+        if !allowed_routes(mode).contains(&egress.route) {
+            return Proof::Leaked(egress.route);
+        }
+    }
+    if reported {
+        Proof::Enforced
+    } else {
+        Proof::Silent
+    }
+}
+
+/// The audit routes `mode` can produce: its transports plus `down`, the strict
+/// modes' silence. `direct` is absent from every strict mode's set — that absence
+/// is the property being proven.
+fn allowed_routes(mode: Mode) -> &'static [AuditRoute] {
+    match mode {
+        Mode::Warp => &[AuditRoute::Warp, AuditRoute::Down],
+        Mode::Tor => &[AuditRoute::Tor, AuditRoute::Down],
+        Mode::Redteam => &[AuditRoute::Tor, AuditRoute::Warp, AuditRoute::Down],
+        // Fallback modes admit every route; they are never checked.
+        Mode::Auto | Mode::Direct => &[
+            AuditRoute::Warp,
+            AuditRoute::Tor,
+            AuditRoute::Direct,
+            AuditRoute::Down,
+        ],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One trail line carrying an egress record, as grep would hand it back.
+    fn egress_line(route: AuditRoute) -> String {
+        serde_json::to_string(&AuditRecord {
+            at: Timestamp::now(),
+            sandbox: "c0ffee".to_owned(),
+            uid: None,
+            event: AuditEvent::Egress(fishbowl_audit::Egress {
+                route,
+                reason: None,
+            }),
+        })
+        .unwrap()
+    }
+
+    /// One trail line carrying something else.
+    fn noise_line() -> String {
+        serde_json::to_string(&AuditRecord {
+            at: Timestamp::now(),
+            sandbox: "c0ffee".to_owned(),
+            uid: None,
+            event: AuditEvent::Blocked(fishbowl_audit::Blocked {
+                transport: fishbowl_audit::Transport::Tcp,
+                destination: fishbowl_audit::Endpoint {
+                    ip: "203.0.113.9".parse().unwrap(),
+                    port: 443,
+                },
+                reason: fishbowl_audit::BlockReason::NoHandler,
+            }),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn a_trail_without_egress_records_proves_nothing() {
+        for output in ["", &noise_line(), "not json\n"] {
+            assert!(
+                matches!(egress_proof(output, Mode::Redteam), Proof::Silent),
+                "a gateway that never names its route is one without the layer"
+            );
+        }
+    }
+
+    #[test]
+    fn a_route_the_mode_produces_is_enforcement() {
+        for (route, mode) in [
+            (AuditRoute::Tor, Mode::Redteam),
+            (AuditRoute::Warp, Mode::Redteam),
+            (AuditRoute::Down, Mode::Redteam),
+            (AuditRoute::Tor, Mode::Tor),
+            (AuditRoute::Warp, Mode::Warp),
+            (AuditRoute::Down, Mode::Warp),
+        ] {
+            let output = format!("{}\n{}", noise_line(), egress_line(route));
+            assert!(
+                matches!(egress_proof(&output, mode), Proof::Enforced),
+                "{route:?} is a route {mode} can produce"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_under_a_strict_mode_is_a_leak() {
+        for mode in [Mode::Warp, Mode::Tor, Mode::Redteam] {
+            let output = egress_line(AuditRoute::Direct);
+            assert!(
+                matches!(
+                    egress_proof(&output, mode),
+                    Proof::Leaked(AuditRoute::Direct)
+                ),
+                "{mode} can never produce route=direct"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cross_transport_route_is_still_wrong() {
+        let output = egress_line(AuditRoute::Warp);
+        assert!(
+            matches!(
+                egress_proof(&output, Mode::Tor),
+                Proof::Leaked(AuditRoute::Warp)
+            ),
+            "a tor session riding WARP is enforcement gone wrong, not enforcement"
+        );
+    }
+
+    #[test]
+    fn a_later_good_record_does_not_excuse_an_earlier_leak() {
+        let output = format!(
+            "{}\n{}",
+            egress_line(AuditRoute::Direct),
+            egress_line(AuditRoute::Tor)
+        );
+        assert!(
+            matches!(
+                egress_proof(&output, Mode::Redteam),
+                Proof::Leaked(AuditRoute::Direct)
+            ),
+            "the direct egress already happened; recovery does not un-leak it"
+        );
+    }
 }

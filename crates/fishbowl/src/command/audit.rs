@@ -110,7 +110,7 @@ fn event(event: &AuditEvent) -> String {
         ),
         AuditEvent::Egress(egress) => format!(
             "egress route={}{}",
-            route(egress.route),
+            egress.route,
             egress
                 .reason
                 .as_deref()
@@ -137,15 +137,6 @@ const fn transport(transport: Transport) -> &'static str {
         Transport::Tcp => "tcp",
         Transport::Udp => "udp",
         Transport::Other => "other",
-    }
-}
-
-const fn route(route: fishbowl_audit::Route) -> &'static str {
-    match route {
-        fishbowl_audit::Route::Warp => "warp",
-        fishbowl_audit::Route::Tor => "tor",
-        fishbowl_audit::Route::Direct => "direct",
-        fishbowl_audit::Route::Down => "down",
     }
 }
 

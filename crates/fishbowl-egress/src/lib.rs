@@ -87,7 +87,13 @@ impl Mode {
     }
 
     /// Whether a connection may go out directly when the wanted transport is down.
-    fn permits_fallback(self) -> bool {
+    ///
+    /// Public because the host relies on the strict modes' `false`: it is the
+    /// property provisioning verifies against the machine's own audit trail before
+    /// a session opens, since the mode travels to the guest as a request it can
+    /// silently fail to honour.
+    #[must_use]
+    pub fn permits_fallback(self) -> bool {
         matches!(self, Self::Auto | Self::Direct)
     }
 }

@@ -164,6 +164,17 @@ pub enum Route {
     Down,
 }
 
+impl std::fmt::Display for Route {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Warp => "warp",
+            Self::Tor => "tor",
+            Self::Direct => "direct",
+            Self::Down => "down",
+        })
+    }
+}
+
 /// Traffic the packet filter refused to forward.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Blocked {
