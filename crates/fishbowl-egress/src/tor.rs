@@ -14,7 +14,7 @@ use std::{
 };
 
 use arti_client::{
-    DangerouslyIntoTorAddr, StreamPrefs, TorClient,
+    DangerouslyIntoTorAddr, StreamPrefs, TorAddr, TorClient,
     config::{ConfigBuildError, TorClientConfigBuilder},
 };
 use tokio::{
@@ -33,9 +33,9 @@ const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(20);
 /// The whole DNS exchange may take this long across attempts.
 const DNS_TIMEOUT: Duration = Duration::from_secs(90);
 
-/// A failed stream is retried this many times. Each retry rides a circuit no other
-/// stream shares, which is how Arti is coaxed into a fresh exit — the only remedy for
-/// a destination one exit refuses or cannot reach.
+/// A failed stream or exchange is retried this many times. Each retry rides a circuit
+/// no other stream shares, which is how Arti is coaxed into a fresh exit — the only
+/// remedy for a destination one exit refuses or cannot reach.
 const ATTEMPTS: usize = 5;
 
 /// Bootstrapping a fresh consensus can take minutes on a slow network; an attempt that
@@ -64,15 +64,8 @@ impl Tor {
             ))
         })?;
         let mut last_error = None;
-        for attempt in 0..ATTEMPTS {
-            let result = if attempt == 0 {
-                self.client.connect(target.clone()).await
-            } else {
-                let mut prefs = StreamPrefs::new();
-                prefs.new_isolation_group();
-                self.client.connect_with_prefs(target.clone(), &prefs).await
-            };
-            match result {
+        for _ in 0..ATTEMPTS {
+            match self.connect_fresh(target.clone()).await {
                 Ok(stream) => return Ok(stream),
                 Err(error) => last_error = Some(error),
             }
@@ -82,6 +75,16 @@ impl Tor {
                 .map(|error| format!("Tor could not reach {destination}: {error}"))
                 .unwrap_or_default(),
         ))
+    }
+
+    /// One connect attempt on a circuit no other stream shares.
+    async fn connect_fresh(
+        &self,
+        target: TorAddr,
+    ) -> Result<arti_client::DataStream, arti_client::Error> {
+        let mut prefs = StreamPrefs::new();
+        prefs.new_isolation_group();
+        self.client.connect_with_prefs(target, &prefs).await
     }
 
     /// Relays one DNS wire message over TCP to `resolver` through an exit node.
@@ -113,7 +116,7 @@ impl Tor {
         // carry a given port are common enough that a handful of circuits is no rare
         // case; the attempt count and the outer deadline bound it together.
         let mut last_error = None;
-        for _ in 0..8 {
+        for _ in 0..ATTEMPTS {
             match tokio::time::timeout(ATTEMPT_TIMEOUT, self.dns_exchange_once(resolver, query))
                 .await
             {
