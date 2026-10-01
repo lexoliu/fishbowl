@@ -9,7 +9,7 @@
 
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
-use fishbowl_egress::{Egress, Mode};
+use fishbowl_egress::{Egress, Leg, Mode};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// The resolver bootstrap traffic and DNS exchanges are pointed at.
@@ -58,7 +58,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // A DNS exchange: the wire message goes over whatever route connections take.
-    let answer = egress.dns_exchange(RESOLVER, &a_query("example.com")).await;
+    let answer = egress
+        .dns_exchange(RESOLVER, &a_query("example.com"), Leg::Base)
+        .await;
     match answer {
         Ok(answer) => println!("dns: example.com answered in {}B", answer.len()),
         Err(error) => println!("dns: refused — {error}"),
@@ -68,9 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // connection come in through its own tunnel. Over Tor the probe goes elsewhere —
     // Cloudflare's edge drops Tor exits outright.
     let target = match mode {
-        // `redteam` prefers Tor — probe somewhere an exit can reach; if it fell back
-        // to WARP the same probe still answers.
-        Mode::Tor | Mode::Redteam => ("detectportal.firefox.com", "/"),
+        Mode::Tor => ("detectportal.firefox.com", "/"),
         _ => ("www.cloudflare.com", "/cdn-cgi/trace"),
     };
     match http_trace(&egress, target).await {
@@ -105,10 +105,14 @@ async fn http_trace(egress: &Egress, (host, path): (&str, &str)) -> std::io::Res
 }
 
 async fn http_exchange(egress: &Egress, (host, path): (&str, &str)) -> std::io::Result<String> {
-    let answer = egress.dns_exchange(RESOLVER, &a_query(host)).await?;
+    let answer = egress
+        .dns_exchange(RESOLVER, &a_query(host), Leg::Base)
+        .await?;
     let address = first_a(&answer)
         .ok_or_else(|| std::io::Error::other(format!("{host} carried no A record")))?;
-    let mut stream = egress.connect(SocketAddr::from((address, 80))).await?;
+    let mut stream = egress
+        .connect(SocketAddr::from((address, 80)), Leg::Base)
+        .await?;
     stream
         .write_all(
             format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").as_bytes(),

@@ -49,6 +49,8 @@ setpriv --reuid="${GATEWAY_USER}" --regid="${GATEWAY_USER}" --clear-groups \
     --audit-trail "${AUDIT_TRAIL}" \
     --ca-certificate "${CA_CERTIFICATE}" \
     --proxy-port {{ proxy_port }} \
+    --torsion-port {{ torsion_port }} \
+    --torsion-uid {{ torsion_uid }} \
     --dns-port {{ dns_port }} \
     --nflog-group {{ nflog_group }} \
     --upstream-resolver "${FISHBOWL_RESOLVER}" \

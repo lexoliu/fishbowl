@@ -66,20 +66,25 @@ RUN apt-get update \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
-# Three accounts, because the machine has three kinds of process in it and each pair of
+# Four accounts, because the machine has four kinds of process in it and each pair of
 # them needs telling apart. The gateway is the only one allowed to reach the network
 # directly, which is how the packet filter tells audited traffic from traffic to be
 # audited. The researcher account is the researcher's own shell and both agents, and is
-# the account an agent's borrowed token is written for. Samples run as neither: they are
-# detonated under an account that owns nothing, so reading that token is not among the
-# things a sample can do by simply opening a file.
+# the account an agent's borrowed token is written for. The torsion account is the one
+# a command is deliberately run under to put its traffic on Tor: the filter sends that
+# uid to a dedicated listener whose leg is Tor or a refusal, which is what lets a red
+# team session keep the agent's own control traffic off the slow path. Samples run as
+# none of them: they are detonated under an account that owns nothing, so reading that
+# token is not among the things a sample can do by simply opening a file.
 #
-# The researcher's home is closed to the other two. Under it are the agent's settings and
-# every conversation it has had here, which is not material to leave a sample able to read.
+# The researcher's home is closed to the other three. Under it are the agent's settings
+# and every conversation it has had here, which is not material to leave a sample able
+# to read.
 #
 # The working directory is shared, because a sample is detonated on the files the
-# researcher put there and the researcher wants what it leaves behind. It is setgid so
-# that whichever account wrote a file, the other can still reach it.
+# researcher put there and the researcher wants what it leaves behind, and because a
+# torsion-wrapped command works on the same files. It is setgid so that whichever
+# account wrote a file, the others can still reach it.
 RUN groupadd --gid {{ gateway_gid }} {{ gateway_user }} \
  && useradd --uid {{ gateway_uid }} --gid {{ gateway_gid }} --home-dir {{ gateway_home }} \
       --create-home --shell /usr/sbin/nologin {{ gateway_user }} \
@@ -89,7 +94,11 @@ RUN groupadd --gid {{ gateway_gid }} {{ gateway_user }} \
  && groupadd --gid {{ detonate_gid }} {{ detonate_user }} \
  && useradd --uid {{ detonate_uid }} --gid {{ detonate_gid }} --home-dir /home/{{ detonate_user }} \
       --create-home --shell /bin/bash {{ detonate_user }} \
+ && groupadd --gid {{ torsion_gid }} {{ torsion_user }} \
+ && useradd --uid {{ torsion_uid }} --gid {{ torsion_gid }} --home-dir /home/{{ torsion_user }} \
+      --create-home --shell /bin/bash {{ torsion_user }} \
  && usermod --append --groups {{ detonate_user }} {{ researcher_user }} \
+ && usermod --append --groups {{ detonate_user }} {{ torsion_user }} \
  && mkdir -p {{ audit_directory }} /run/sshd {{ samples_dir }} {{ work_dir }} \
  && chown {{ gateway_uid }}:{{ gateway_gid }} {{ audit_directory }} \
  && chown {{ researcher_uid }}:{{ detonate_gid }} {{ work_dir }} \
@@ -140,15 +149,17 @@ RUN chown -R {{ researcher_uid }}:{{ researcher_gid }} /home/{{ researcher_user 
       /home/{{ researcher_user }}/.claude/settings.json \
  && chmod 0755 {{ status_line_program }}
 
-# Becoming the detonation account is the one thing the researcher account may do that it
-# could not do on its own, and it is granted by a single sudoers rule that does not name
-# root. `visudo` checks the file here, so a rule that would not parse fails the build
-# rather than leaving a session where nothing can be detonated at all.
+# Becoming another account is the thing the researcher account may do that it could not
+# do on its own, and it is granted by a single sudoers rule that does not name root —
+# the two wrappers differ only in which uid they land a command on. `visudo` checks the
+# file here, so a rule that would not parse fails the build rather than leaving a
+# session where nothing can be detonated at all.
 COPY sudoers /etc/sudoers.d/fishbowl
 COPY detonate.sh /usr/local/bin/detonate
+COPY torsion.sh /usr/local/bin/torsion
 RUN chown root:root /etc/sudoers.d/fishbowl \
  && chmod 0440 /etc/sudoers.d/fishbowl \
- && chmod 0755 /usr/local/bin/detonate \
+ && chmod 0755 /usr/local/bin/detonate /usr/local/bin/torsion \
  && visudo -cs -f /etc/sudoers.d/fishbowl
 
 # The gateway needs CAP_NET_ADMIN to bind the netfilter log group, and it needs it after

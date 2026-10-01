@@ -247,6 +247,12 @@ pub struct Egress {
     /// Why the route is this one, when it is a fallback or an outage rather than the
     /// transport the session asked for.
     pub reason: Option<String>,
+    /// Which supervised leg this report is about, when the egress runs more than
+    /// one: the `torsion` uid's dedicated Tor leg reports under `leg: "torsion"`,
+    /// while the base route every other connection falls to reports without one.
+    /// Readers proving enforcement read the leg-less records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub leg: Option<String>,
 }
 
 /// The network carrying the gateway's own connections.

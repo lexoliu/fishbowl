@@ -111,10 +111,11 @@ pub struct Attach {
     /// Before anything is started, the terminal asks the operator to attest that they
     /// hold authorization for the targets the session will touch; anything but an
     /// explicit yes ends the opening. Inside, the agent is briefed for offensive work
-    /// and told the engagement is authorized, and egress is forced through an
-    /// anonymizing transport — Tor first, WARP when Tor cannot be raised, never the
-    /// machine's own address. Settled when the session is created, and attested again
-    /// on every opening of the session it made.
+    /// and told the engagement is authorized. Egress rides the Cloudflare WARP tunnel —
+    /// never the machine's own address — and a parallel Tor leg waits on the `torsion`
+    /// wrapper: `torsion <command>` runs the command's traffic and its DNS inside Tor,
+    /// while the agent's own control traffic stays on the fast path. Settled when the
+    /// session is created, and attested again on every opening of the session it made.
     #[arg(long, conflicts_with = "egress")]
     pub redteam: bool,
 }

@@ -184,6 +184,18 @@ mod tests {
             briefing.contains("`detonate`"),
             "the sample rules still stand"
         );
+        assert!(
+            briefing.contains("`torsion`"),
+            "the per-command Tor leg is how target-bound work stays off the agent's \
+             own route — an agent that does not know the wrapper sends everything \
+             through the base path: {briefing}"
+        );
+        assert!(
+            !Handoff::from_lookup(&layout, |_| false)
+                .briefing(&layout, false)
+                .contains("`torsion`"),
+            "a session without the leg does not brief the wrapper that rides it"
+        );
     }
 
     #[test]

@@ -613,6 +613,12 @@ fn egress_proof(output: &str, mode: Mode) -> Proof {
         let AuditEvent::Egress(egress) = record.event else {
             continue;
         };
+        // A named leg reports a parallel transport — the `torsion` uid's Tor leg —
+        // not the base route every other connection falls to, and it is the base
+        // route this proof exists to check.
+        if egress.leg.is_some() {
+            continue;
+        }
         reported = true;
         if !allowed_routes(mode).contains(&egress.route) {
             return Proof::Leaked(egress.route);
@@ -625,14 +631,17 @@ fn egress_proof(output: &str, mode: Mode) -> Proof {
     }
 }
 
-/// The audit routes `mode` can produce: its transports plus `down`, the strict
-/// modes' silence. `direct` is absent from every strict mode's set — that absence
-/// is the property being proven.
+/// The audit routes `mode` can produce on its base leg: its transports plus `down`,
+/// the strict modes' silence. `direct` is absent from every strict mode's set — that
+/// absence is the property being proven. `tor` is absent from `redteam`'s too: its
+/// base route is WARP alone, so a base-leg `tor` record means the floor was never
+/// raised and the proof must not take it.
 fn allowed_routes(mode: Mode) -> &'static [AuditRoute] {
     match mode {
-        Mode::Warp => &[AuditRoute::Warp, AuditRoute::Down],
+        // Same set, different reason: `warp` because WARP is the whole mode,
+        // `redteam` because WARP is the floor while Tor lives on the named leg.
+        Mode::Warp | Mode::Redteam => &[AuditRoute::Warp, AuditRoute::Down],
         Mode::Tor => &[AuditRoute::Tor, AuditRoute::Down],
-        Mode::Redteam => &[AuditRoute::Tor, AuditRoute::Warp, AuditRoute::Down],
         // Fallback modes admit every route; they are never checked.
         Mode::Auto | Mode::Direct => &[
             AuditRoute::Warp,
@@ -649,6 +658,11 @@ mod tests {
 
     /// One trail line carrying an egress record, as grep would hand it back.
     fn egress_line(route: AuditRoute) -> String {
+        egress_line_on(route, None)
+    }
+
+    /// One trail line carrying an egress record for a named leg.
+    fn egress_line_on(route: AuditRoute, leg: Option<&str>) -> String {
         serde_json::to_string(&AuditRecord {
             at: Timestamp::now(),
             sandbox: "c0ffee".to_owned(),
@@ -656,6 +670,7 @@ mod tests {
             event: AuditEvent::Egress(fishbowl_audit::Egress {
                 route,
                 reason: None,
+                leg: leg.map(ToOwned::to_owned),
             }),
         })
         .unwrap()
@@ -692,7 +707,6 @@ mod tests {
     #[test]
     fn a_route_the_mode_produces_is_enforcement() {
         for (route, mode) in [
-            (AuditRoute::Tor, Mode::Redteam),
             (AuditRoute::Warp, Mode::Redteam),
             (AuditRoute::Down, Mode::Redteam),
             (AuditRoute::Tor, Mode::Tor),
@@ -702,9 +716,42 @@ mod tests {
             let output = format!("{}\n{}", noise_line(), egress_line(route));
             assert!(
                 matches!(egress_proof(&output, mode), Proof::Enforced),
-                "{route:?} is a route {mode} can produce"
+                "{route:?} is a route {mode} can produce on its base leg"
             );
         }
+    }
+
+    #[test]
+    fn redteam_proves_its_warp_floor_and_never_a_tor_only_base() {
+        // Tor rides a parallel leg under the new redteam: a base-leg `tor` report can
+        // only come from a gateway that predates the redesign, and taking it as proof
+        // would open a session whose `torsion` commands have no listener at all.
+        let output = egress_line(AuditRoute::Tor);
+        assert!(
+            matches!(
+                egress_proof(&output, Mode::Redteam),
+                Proof::Leaked(AuditRoute::Tor)
+            ),
+            "the base leg is WARP or down; Tor on it is the old world"
+        );
+
+        // The torsion leg's own records say nothing about the floor: a trail that
+        // only ever reported them is silence, and one followed by the base route's
+        // report proves exactly the base route.
+        let leg_only = egress_line_on(AuditRoute::Tor, Some("torsion"));
+        assert!(
+            matches!(egress_proof(&leg_only, Mode::Redteam), Proof::Silent),
+            "a leg report is not the base route's"
+        );
+        let both = format!(
+            "{}\n{}",
+            egress_line_on(AuditRoute::Tor, Some("torsion")),
+            egress_line(AuditRoute::Warp)
+        );
+        assert!(matches!(
+            egress_proof(&both, Mode::Redteam),
+            Proof::Enforced
+        ));
     }
 
     #[test]

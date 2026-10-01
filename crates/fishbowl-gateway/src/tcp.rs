@@ -7,7 +7,7 @@
 use std::{net::SocketAddr, sync::Arc, time::Instant};
 
 use fishbowl_audit::{AuditEvent, BlockReason, Blocked, Connect, Endpoint, TlsSeen, Transport};
-use fishbowl_egress::{Egress, Upstream};
+use fishbowl_egress::{Egress, Leg, Upstream};
 use tokio::{
     io::{AsyncRead, AsyncWrite, copy_bidirectional},
     net::{TcpListener, TcpStream},
@@ -42,6 +42,10 @@ pub enum Inspection {
 
 /// Accepts redirected connections until the listener fails.
 ///
+/// `leg` is which supervised route this listener's connections take: the main proxy
+/// port serves `Base`, and the dedicated port the packet filter sends the `torsion`
+/// uid's connections to serves `Torsion` — Tor, or a refusal.
+///
 /// # Errors
 /// Fails only when the listening socket itself breaks; a failure on one connection is
 /// recorded and the loop continues.
@@ -50,6 +54,7 @@ pub async fn serve(
     inspection: Inspection,
     egress: Arc<Egress>,
     sink: AuditSink,
+    leg: Leg,
 ) -> Result<()> {
     loop {
         let (stream, peer) = listener
@@ -63,7 +68,7 @@ pub async fn serve(
         let egress = Arc::clone(&egress);
         let sink = sink.clone();
         tokio::spawn(async move {
-            if let Err(error) = handle(stream, peer, inspection, egress, sink).await {
+            if let Err(error) = handle(stream, peer, inspection, egress, sink, leg).await {
                 tracing::warn!(%error, %peer, "a redirected connection ended in an error");
             }
         });
@@ -76,6 +81,7 @@ async fn handle(
     inspection: Inspection,
     egress: Arc<Egress>,
     sink: AuditSink,
+    leg: Leg,
 ) -> Result<()> {
     let destination = original_destination(&stream)?;
     // The account that opened this connection is only recoverable while its socket is
@@ -90,15 +96,13 @@ async fn handle(
     } else {
         sink
     };
-    let endpoint = Endpoint {
-        ip: destination.ip(),
-        port: destination.port(),
-    };
+    let target = Target { destination, leg };
+    let endpoint = target.endpoint();
 
     // `off` probes nothing: a connection is a connection, and the sandbox's bytes are
     // relayed exactly as they arrived.
     if let Inspection::Pass = inspection {
-        let Some(upstream) = connect(destination, &egress, &endpoint, &sink).await? else {
+        let Some(upstream) = connect(&target, &egress, &sink).await? else {
             return Ok(());
         };
         return tunnel(stream, upstream, endpoint, sink).await;
@@ -114,20 +118,20 @@ async fn handle(
     if looks_like_tls(probed.prefix()) {
         return match inspection {
             Inspection::Terminate(bridge) => {
-                intercept_tls(probed, peer, destination, endpoint, bridge, egress, sink).await
+                intercept_tls(probed, peer, target, bridge, egress, sink).await
             }
-            Inspection::Observe => observe_tls(probed, destination, endpoint, egress, sink).await,
+            Inspection::Observe => observe_tls(probed, target, egress, sink).await,
             Inspection::Pass => unreachable!("the pass-through path never probes"),
         };
     }
 
-    let Some(upstream) = connect(destination, &egress, &endpoint, &sink).await? else {
+    let Some(upstream) = connect(&target, &egress, &sink).await? else {
         return Ok(());
     };
     if looks_like_http(probed.prefix()) {
         let context = ExchangeContext {
             scheme: "http",
-            authority: destination.to_string(),
+            authority: target.destination.to_string(),
             destination: endpoint,
         };
         http::proxy(probed, upstream, context, sink)
@@ -141,14 +145,33 @@ async fn handle(
     }
 }
 
+/// Where a redirected connection was aimed and which supervised route must carry it:
+/// the two facts about the far side every path downstream of the probe needs.
+#[derive(Clone, Copy)]
+struct Target {
+    /// The original destination `SO_ORIGINAL_DST` recovered.
+    destination: SocketAddr,
+    /// The egress leg the upstream connection opens on.
+    leg: Leg,
+}
+
+impl Target {
+    /// The destination as the audit trail records it.
+    fn endpoint(&self) -> Endpoint {
+        Endpoint {
+            ip: self.destination.ip(),
+            port: self.destination.port(),
+        }
+    }
+}
+
 /// Records the client hello's declared destination and relays the session untouched.
 ///
 /// The record is written before the upstream attempt so the trail holds what the
 /// sandbox asked for even when no route could carry it there.
 async fn observe_tls(
     probed: Prefixed<TcpStream>,
-    destination: SocketAddr,
-    endpoint: Endpoint,
+    target: Target,
     egress: Arc<Egress>,
     sink: AuditSink,
 ) -> Result<()> {
@@ -158,13 +181,14 @@ async fn observe_tls(
             context: "reading a client hello for the record",
             source,
         })?;
+    let endpoint = target.endpoint();
     sink.record(AuditEvent::TlsSeen(TlsSeen {
         destination: endpoint.clone(),
         server_name: hello.server_name,
         alpn: hello.alpn,
     }))
     .await;
-    let Some(upstream) = connect(destination, &egress, &endpoint, &sink).await? else {
+    let Some(upstream) = connect(&target, &egress, &sink).await? else {
         return Ok(());
     };
     tunnel(probed, upstream, endpoint, sink).await
@@ -173,13 +197,16 @@ async fn observe_tls(
 async fn intercept_tls(
     probed: Prefixed<TcpStream>,
     peer: SocketAddr,
-    destination: SocketAddr,
-    endpoint: Endpoint,
+    target: Target,
     bridge: Arc<TlsBridge>,
     egress: Arc<Egress>,
     sink: AuditSink,
 ) -> Result<()> {
-    let intercepted = match bridge.intercept(probed, peer, destination, &egress).await {
+    let endpoint = target.endpoint();
+    let intercepted = match bridge
+        .intercept(probed, peer, target.destination, &egress, target.leg)
+        .await
+    {
         Ok(intercepted) => intercepted,
         Err(error) => {
             sink.record(AuditEvent::Blocked(Blocked {
@@ -195,7 +222,7 @@ async fn intercept_tls(
         .handshake
         .server_name
         .clone()
-        .unwrap_or_else(|| destination.ip().to_string());
+        .unwrap_or_else(|| target.destination.ip().to_string());
     sink.record(AuditEvent::Tls(intercepted.handshake)).await;
 
     let inner = Prefixed::probe(intercepted.sandbox)
@@ -224,19 +251,14 @@ async fn intercept_tls(
 /// Opens the upstream connection on the session's egress route, recording a refusal if
 /// the destination is unreachable — or, under a strict egress mode, refused while the
 /// tunnel that must carry it is down.
-async fn connect(
-    destination: SocketAddr,
-    egress: &Egress,
-    endpoint: &Endpoint,
-    sink: &AuditSink,
-) -> Result<Option<Upstream>> {
-    match egress.connect(destination).await {
+async fn connect(target: &Target, egress: &Egress, sink: &AuditSink) -> Result<Option<Upstream>> {
+    match egress.connect(target.destination, target.leg).await {
         Ok(stream) => Ok(Some(stream)),
         Err(error) => {
-            tracing::debug!(%error, %destination, "the destination refused the connection");
+            tracing::debug!(%error, destination = %target.destination, "the destination refused the connection");
             sink.record(AuditEvent::Blocked(Blocked {
                 transport: Transport::Tcp,
-                destination: endpoint.clone(),
+                destination: target.endpoint(),
                 reason: if refused_by_egress(&error) {
                     BlockReason::EgressUnavailable
                 } else {

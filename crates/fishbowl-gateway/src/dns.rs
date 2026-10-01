@@ -11,7 +11,7 @@ use std::{
 };
 
 use fishbowl_audit::{AuditEvent, BlockReason, Blocked, DnsAnswer, DnsQuery, Endpoint, Transport};
-use fishbowl_egress::Egress;
+use fishbowl_egress::{Egress, Leg};
 use hickory_proto::op::Message;
 use tokio::{net::UdpSocket, time::Duration};
 
@@ -32,6 +32,11 @@ const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Answers redirected DNS queries until the socket fails.
 ///
+/// `torsion_uid` splits the queries' route just as the packet filter splits
+/// connections': a query from the dedicated account resolves inside Tor, everyone
+/// else's on the base route — a lookup must never precede the traffic it names and
+/// leak it to the wrong network.
+///
 /// # Errors
 /// Fails only when the listening socket itself breaks.
 pub async fn serve(
@@ -39,6 +44,7 @@ pub async fn serve(
     upstream: SocketAddrV4,
     egress: Arc<Egress>,
     sink: AuditSink,
+    torsion_uid: u32,
 ) -> Result<()> {
     let socket = Arc::new(socket);
     let mut buffer = vec![0_u8; MAX_MESSAGE];
@@ -56,7 +62,9 @@ pub async fn serve(
         let egress = Arc::clone(&egress);
         let sink = sink.clone();
         tokio::spawn(async move {
-            if let Err(error) = resolve(&socket, client, upstream, egress, query, sink).await {
+            if let Err(error) =
+                resolve(&socket, client, upstream, egress, query, sink, torsion_uid).await
+            {
                 tracing::warn!(%error, %client, "a DNS query could not be answered");
             }
         });
@@ -70,27 +78,33 @@ async fn resolve(
     egress: Arc<Egress>,
     query: Vec<u8>,
     sink: AuditSink,
+    torsion_uid: u32,
 ) -> Result<()> {
     let started = Instant::now();
     // Attributed before anything is forwarded, while the querying socket is still
-    // bound. Under the `off` tier no record is written, so the lookup is skipped.
+    // bound — and under every tier, not just those that record traffic: the uid is
+    // what routes the query, so the lookup is load-bearing even when nothing is
+    // written to the trail.
     let SocketAddr::V4(source) = client else {
         return Err(GatewayError::NotIpv4 { peer: client });
     };
-    let sink = if sink.records_traffic() {
-        sink.attributed_to(owner_of::<Udp>(source).await?)
+    let owner = owner_of::<Udp>(source).await?;
+    let sink = sink.attributed_to(owner);
+    let leg = if owner == Some(torsion_uid) {
+        Leg::Torsion
     } else {
-        sink
+        Leg::Base
     };
 
-    // The exchange crosses whatever route connections cross: a query that went around
-    // the session's tunnel would name the machine it came from.
-    let exchanged = tokio::time::timeout(UPSTREAM_TIMEOUT, egress.dns_exchange(upstream, &query))
-        .await
-        .map_err(|_| GatewayError::Socket {
-            context: "waiting for the upstream resolver",
-            source: std::io::Error::from(std::io::ErrorKind::TimedOut),
-        })?;
+    // The exchange crosses whatever route the querier's connections cross: a query
+    // that went around its leg's tunnel would name the machine it came from.
+    let exchanged =
+        tokio::time::timeout(UPSTREAM_TIMEOUT, egress.dns_exchange(upstream, &query, leg))
+            .await
+            .map_err(|_| GatewayError::Socket {
+                context: "waiting for the upstream resolver",
+                source: std::io::Error::from(std::io::ErrorKind::TimedOut),
+            })?;
     let answer = match exchanged {
         Ok(answer) => answer,
         Err(source) => {

@@ -27,7 +27,7 @@ use std::{
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 use fishbowl_audit::{AuditEvent, Route, Tier};
-use fishbowl_egress::{Egress, Mode, Routes};
+use fishbowl_egress::{Egress, Leg, Mode, Routes};
 use tokio::net::{TcpListener, UdpSocket};
 use tracing_subscriber::EnvFilter;
 
@@ -77,6 +77,14 @@ struct Serve {
     /// Port redirected TCP connections arrive on.
     #[arg(long)]
     proxy_port: u16,
+    /// Port the `torsion` uid's redirected TCP connections arrive on — the dedicated
+    /// listener whose every connection rides Tor or is refused.
+    #[arg(long)]
+    torsion_port: u16,
+    /// Uid of the `torsion` account: the packet filter sends its TCP to the dedicated
+    /// listener, and the resolver reads the uid to send its DNS over Tor.
+    #[arg(long)]
+    torsion_uid: u32,
     /// Port redirected DNS queries arrive on.
     #[arg(long)]
     dns_port: u16,
@@ -91,7 +99,8 @@ struct Serve {
     /// `auto` tunnels through Cloudflare WARP when the tunnel can be raised and falls
     /// back to direct egress when it cannot; `warp` and `tor` refuse connections while
     /// their transport is down rather than emit them under the machine's own address;
-    /// `redteam` prefers Tor, falls back to WARP, and refuses while neither is up.
+    /// `redteam` rides WARP as the floor and raises a parallel Tor leg for the
+    /// `torsion` uid — a command deliberately wrapped for it is Tor or a refusal.
     ///
     /// Parsed by name rather than as a value enum: `redteam` is a mode the host's
     /// `--egress` does not offer — only a session created as red team names it here.
@@ -178,6 +187,9 @@ async fn serve(arguments: Serve) -> anyhow::Result<()> {
     let proxy = TcpListener::bind((Ipv4Addr::LOCALHOST, arguments.proxy_port))
         .await
         .context("binding the transparent proxy port")?;
+    let torsion = TcpListener::bind((Ipv4Addr::LOCALHOST, arguments.torsion_port))
+        .await
+        .context("binding the torsion proxy port")?;
     let resolver = UdpSocket::bind((Ipv4Addr::LOCALHOST, arguments.dns_port))
         .await
         .context("binding the intercepting resolver port")?;
@@ -198,8 +210,13 @@ async fn serve(arguments: Serve) -> anyhow::Result<()> {
     ));
 
     // Which network audited traffic actually leaves over is itself part of the trail:
-    // a record's meaning depends on the route it went out on.
-    tokio::spawn(report_routes(egress.routes(), sink.clone()));
+    // a record's meaning depends on the route it went out on. A mode that raises a
+    // second leg reports it under its own name, so the base route's records — the
+    // ones the host's proof reads — are never a leg's observation.
+    tokio::spawn(report_routes(egress.routes(), sink.clone(), None));
+    if let Some(torsion) = egress.torsion_routes() {
+        tokio::spawn(report_routes(torsion, sink.clone(), Some("torsion")));
+    }
 
     tracing::info!(
         sandbox = arguments.sandbox,
@@ -211,8 +228,27 @@ async fn serve(arguments: Serve) -> anyhow::Result<()> {
     );
 
     let result = tokio::try_join!(
-        tcp::serve(proxy, inspection, Arc::clone(&egress), sink.clone()),
-        dns::serve(resolver, upstream, egress, sink.clone()),
+        tcp::serve(
+            proxy,
+            inspection.clone(),
+            Arc::clone(&egress),
+            sink.clone(),
+            Leg::Base
+        ),
+        tcp::serve(
+            torsion,
+            inspection,
+            Arc::clone(&egress),
+            sink.clone(),
+            Leg::Torsion
+        ),
+        dns::serve(
+            resolver,
+            upstream,
+            egress,
+            sink.clone(),
+            arguments.torsion_uid
+        ),
         nflog::watch(arguments.nflog_group, sink),
     );
     drop(writer);
@@ -221,8 +257,10 @@ async fn serve(arguments: Serve) -> anyhow::Result<()> {
 }
 
 /// Appends an egress record to the trail each time the route upstream traffic rides
-/// on changes.
-async fn report_routes(mut routes: Routes, sink: audit::AuditSink) {
+/// on changes. `leg` names which supervised route is being reported — `None` is the
+/// base route every connection falls to, and `Some` is a dedicated uid's parallel
+/// leg.
+async fn report_routes(mut routes: Routes, sink: audit::AuditSink, leg: Option<&'static str>) {
     loop {
         let (route, reason) = routes.current();
         sink.record(AuditEvent::Egress(fishbowl_audit::Egress {
@@ -233,6 +271,7 @@ async fn report_routes(mut routes: Routes, sink: audit::AuditSink) {
                 fishbowl_egress::Route::Down => Route::Down,
             },
             reason: reason.as_deref().map(ToOwned::to_owned),
+            leg: leg.map(ToOwned::to_owned),
         }))
         .await;
         if routes.changed().await.is_none() {

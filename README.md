@@ -60,10 +60,13 @@ the mode.
 for. Before anything is started, the terminal asks you to attest that authorization —
 anything but an explicit yes ends the opening, and the attestation is asked again on
 every later opening of the session. Inside, the agent is briefed that the engagement
-is authorized and tasked to operate offensively, and egress is forced through an
-anonymizing transport — Tor first, WARP when Tor cannot be raised, never the machine's
-own address — so a red team session that loses both exits has no network rather than
-an unattributed one. The audit trail still sees everything.
+is authorized and tasked to operate offensively. The session's base egress is the WARP
+tunnel — strict, so the machine's own address is never an exit — and Tor rides beside
+it as a per-command leg rather than as the floor: run a target-bound command through
+`torsion` (`torsion nmap -sV target`) and its TCP and DNS are carried over Tor and
+refused while Tor is down, while the agent's own tooling and control traffic stay on
+the fast path. The audit trail still sees everything, including which leg each record
+rode.
 
 ## Install
 

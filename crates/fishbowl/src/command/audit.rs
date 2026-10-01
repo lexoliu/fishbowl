@@ -124,8 +124,12 @@ fn event(event: &AuditEvent) -> String {
             exchange.elapsed_ms
         ),
         AuditEvent::Egress(egress) => format!(
-            "egress route={}{}",
+            "egress route={}{}{}",
             egress.route,
+            egress
+                .leg
+                .as_deref()
+                .map_or_else(String::new, |leg| format!(" leg={leg}")),
             egress
                 .reason
                 .as_deref()
