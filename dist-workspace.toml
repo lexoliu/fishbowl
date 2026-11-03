@@ -28,3 +28,5 @@ pr-run-mode = "plan"
 # workflow; release-plz.yml dispatches this one by tag instead, and the same
 # dispatch input is the manual re-release path.
 dispatch-releases = true
+# Attach GitHub build provenance attestations to the release binaries.
+github-attestations = true
