@@ -212,7 +212,7 @@ mod tests {
         assert!(briefing.contains("Auth-Key"));
 
         let without = Handoff::from_lookup(&layout, |_| false);
-        assert!(without.sent().is_empty());
+        assert_eq!(without.sent(), Vec::<String>::new());
     }
 
     #[test]
